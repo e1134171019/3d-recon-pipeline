@@ -1,0 +1,54 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Core GPU stack
+# Current rebuild baseline for this repo:
+#   Python 3.12
+#   CUDA Toolkit 12.8 (system install, do not modify)
+#   PyTorch cu128 wheels from the official PyTorch index
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+torchaudio==2.11.0+cu128
+gsplat==1.5.3
+
+# Pipeline CLI / reporting
+typer
+rich
+tqdm
+PyYAML
+
+# Phase 0 / export helpers
+opencv-python
+numpy
+Pillow
+imageio
+imageio-ffmpeg
+
+# 3DGS trainer runtime used by gsplat_runner/simple_trainer.py
+tensorboard
+torchmetrics
+lpips
+viser
+nerfview
+matplotlib
+splines
+tyro
+scikit-learn
+
+# SfM inspection
+# Optional in principle, but recommended because src/sfm_colmap.py
+# can read sparse statistics more accurately when pycolmap is present.
+pycolmap
+
+# System-level dependencies that are not installed by pip:
+#
+# 1. GPU COLMAP package
+#    Archive kept at: C:\3d-recon-pipeline\installers\colmap-gpu.zip
+#    Runtime path used by this repo: C:\3d-recon-pipeline\colmap\
+#
+# 2. CUDA Toolkit 12.8
+#    Expected path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
+#
+# 3. Visual Studio 2022 Community / Build Tools
+#    Required: MSVC C++ compiler + Windows SDK + UCRT
+#
+# 4. Ninja

@@ -1,0 +1,496 @@
+# src/train_3dgs.py
+# -*- coding: utf-8 -*-
+import sys
+import io
+import os
+sys.stdout = io.TextIOWrapper(
+    sys.stdout.buffer, 
+    encoding='utf-8', 
+    errors='replace'
+)
+
+"""
+Phase 1B: 3D Gaussian Splatting Training
+========================================
+gsplat (Berkeley) from COLMAP sparse/0.
+
+Quick start:
+  python -m src.train_3dgs
+
+Full params:
+  python -m src.train_3dgs \\
+      --imgdir data/frames_1600 \\
+      --colmap outputs/SfM_models/sift/sparse/0 \\
+      --outdir outputs/3DGS_models \\
+      --iterations 30000 \\
+      --sh-degree 3
+"""
+
+import subprocess, sys, json
+from pathlib import Path
+import typer
+from rich.console import Console
+from rich.panel import Panel
+
+app   = typer.Typer(help="Phase 1B: gsplat 3DGS 訓練")
+console = Console()
+
+DEFAULT_TRAIN_PARAMS = {
+    "imgdir": "data/frames_1600",
+    "colmap": "outputs/SfM_models/sift/sparse/0",
+    "outdir": "outputs/3DGS_models",
+    "iterations": 30000,
+    "sh_degree": 3,
+    "densify_until": 15000,
+    "scene_scale": 0.0,
+    "scale_json": "",
+    "eval_steps": 1000,
+    "data_factor": 1,
+}
+
+def _read_json_robust(path: Path) -> dict:
+    encodings = ("utf-8", "utf-8-sig", "cp950", "mbcs")
+    last_error: Exception | None = None
+    for encoding in encodings:
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except Exception as exc:
+            last_error = exc
+    raise last_error if last_error is not None else ValueError(f"無法解析 JSON：{path}")
+
+
+def _check_gsplat() -> bool:
+    try:
+        import gsplat  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _run(cmd: list[str], cwd: str | None = None) -> None:
+    env = os.environ.copy()
+    stale_arch = env.get("TORCH_CUDA_ARCH_LIST")
+    if stale_arch:
+        console.print(
+            f"[yellow]偵測到 TORCH_CUDA_ARCH_LIST={stale_arch}，"
+            "目前主線會先移除這個舊設定，再啟動 3DGS trainer。[/]"
+        )
+        env.pop("TORCH_CUDA_ARCH_LIST", None)
+
+    console.print(">> " + " ".join(cmd))
+    subprocess.run(cmd, check=True, cwd=cwd, env=env)
+
+
+def _check_pointcloud_validation(validation_report_path: str | None = None) -> bool:
+    """
+    檢查點雲驗證報告。
+    
+    Args:
+        validation_report_path: 驗證報告路徑（如果 None，使用默認位置）
+    
+    Returns:
+        True 表示可以繼續訓練，False 表示應停止
+    """
+    # 確定報告文件位置
+    if validation_report_path is None:
+        project_root = Path(__file__).parent.parent
+        validation_report_path = str(project_root / "outputs" / "reports" / "pointcloud_validation_report.json")
+    
+    report_p = Path(validation_report_path)
+    
+    # 如果報告不存在，中止（確保 SfM 成功才能訓練）
+    if not report_p.exists():
+        console.print(
+            Panel(
+                "[red]❌ 點雲驗證報告不存在（SfM 未成功？）[/]\n\n"
+                f"期望位置：{report_p.resolve()}\n\n"
+                "解決方案：\n"
+                "  1. 先執行 Phase 1A: python -m src.sfm_colmap\n"
+                "  2. 確認 SfM 成功生成了報告\n"
+                "  3. 再執行 Phase 1B: python -m src.train_3dgs",
+                title="[bold red]前置條件未滿足[/]",
+                border_style="red",
+            )
+        )
+        raise FileNotFoundError(f"Point cloud validation report not found: {report_p.resolve()}")
+    
+    # 讀取報告
+    try:
+        report = _read_json_robust(report_p)
+    except Exception as e:
+        console.print(
+            Panel(
+                f"[red]無法解析驗證報告[/]\n{str(e)}",
+                title="[bold red]報告錯誤[/]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)  # 出錯時停止執行（防止錯誤傳播）
+    
+    # 檢查是否可以繼續
+    can_proceed = report.get("can_proceed_to_3dgs", False)
+    
+    if not can_proceed:
+        diagnosis = report.get("diagnosis", "未知原因")
+        console.print(
+            Panel(
+                f"[red]❌ 點雲品質驗證失敗[/]\n\n"
+                f"診斷：{diagnosis}\n\n"
+                f"詳情請見：{report_p.resolve()}",
+                title="[bold red]無法繼續訓練[/]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)
+    
+    # 成功通過驗證
+    console.print(
+        Panel(
+            "[green]✓ 點雲品質驗證通過[/]",
+            title="[bold green]準備訓練[/]",
+            border_style="green",
+        )
+    )
+    return True
+
+
+def _resolve_imgdir(project_root: Path, imgdir: str) -> Path:
+    """Prefer the downscaled image set, but fall back to cleaned frames for compatibility."""
+    requested = Path(imgdir)
+    if not requested.is_absolute():
+        requested = project_root / requested
+
+    if requested.exists() and any(requested.iterdir()):
+        return requested
+
+    fallback = project_root / "data" / "frames_cleaned"
+    if imgdir == "data/frames_1600" and fallback.exists() and any(fallback.iterdir()):
+        console.print(
+            "[yellow]找不到 data/frames_1600，暫時回退到 data/frames_cleaned。"
+            " 若要維持與 SfM 完全一致，建議先重新生成 data/frames_1600。[/]"
+        )
+        return fallback
+
+    return requested
+
+
+def _infer_reports_root(project_root: Path, path_value: str) -> Path | None:
+    candidate = Path(path_value)
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+
+    for node in [candidate] + list(candidate.parents):
+        if node.name in {"SfM_models", "3DGS_models"}:
+            return node.parent / "reports"
+    return None
+
+
+def _resolve_validation_report(
+    project_root: Path,
+    colmap: str,
+    outdir: str,
+    validation_report: str,
+) -> Path:
+    if validation_report:
+        path = Path(validation_report)
+        return path if path.is_absolute() else project_root / path
+
+    for probe in (colmap, outdir):
+        reports_root = _infer_reports_root(project_root, probe)
+        if reports_root is not None:
+            return reports_root / "pointcloud_validation_report.json"
+
+    return project_root / "outputs" / "reports" / "pointcloud_validation_report.json"
+
+
+def _resolve_sparse_model_dir(
+    project_root: Path,
+    colmap: str,
+    validation_report_path: Path,
+) -> Path:
+    requested = Path(colmap)
+    if not requested.is_absolute():
+        requested = project_root / requested
+
+    if validation_report_path.exists():
+        try:
+            report = _read_json_robust(validation_report_path)
+            sparse_dir = report.get("sparse_dir")
+            if sparse_dir:
+                report_path = Path(sparse_dir)
+                if not report_path.is_absolute():
+                    report_path = project_root / report_path
+                if report_path.exists():
+                    if report_path.resolve() != requested.resolve():
+                        console.print(
+                            f"[cyan]依驗證報告改用最佳 sparse model[/] {report_path.resolve()}"
+                        )
+                    return report_path
+        except Exception:
+            pass
+
+    if requested.is_dir() and not (requested / "points3D.bin").exists():
+        sparse_root = requested / "sparse" if (requested / "sparse").exists() else requested
+        candidates = []
+        if sparse_root.exists():
+            for child in sparse_root.iterdir():
+                if not child.is_dir():
+                    continue
+                required = [child / "cameras.bin", child / "images.bin", child / "points3D.bin"]
+                if not all(path.exists() and path.stat().st_size > 0 for path in required):
+                    continue
+                images_size = (child / "images.bin").stat().st_size
+                points_size = (child / "points3D.bin").stat().st_size
+                candidates.append((child, images_size, points_size))
+        if candidates:
+            candidates.sort(key=lambda item: (item[1], item[2], item[0].name), reverse=True)
+            chosen = candidates[0][0]
+            console.print(f"[cyan]自動挑選 sparse model[/] {chosen.resolve()}")
+            return chosen
+
+    return requested
+
+
+def _load_train_params(params_json: str) -> tuple[dict, dict]:
+    """Load agent-provided training params.
+
+    Supports either:
+      1. a train_params.json file whose top-level already is the plan
+      2. a larger payload that contains a "train_params" section
+    """
+    params_path = Path(params_json)
+    if not params_path.exists():
+        raise typer.BadParameter(f"找不到 params json：{params_path}")
+
+    payload = _read_json_robust(params_path)
+    plan = payload.get("train_params", payload)
+    recommended = plan.get("recommended_params", {})
+    if not isinstance(recommended, dict):
+        raise typer.BadParameter(f"params json 格式不正確：{params_path}")
+    return plan, recommended
+
+
+def _build_eval_schedule(step_interval: int, max_steps: int) -> list[int]:
+    """Convert an interval-style setting to the explicit step list expected by simple_trainer."""
+    if step_interval <= 0:
+        return [max_steps]
+
+    schedule = list(range(step_interval, max_steps + 1, step_interval))
+    if max_steps not in schedule:
+        schedule.append(max_steps)
+    return sorted(set(schedule))
+
+
+@app.command()
+def main(
+    imgdir:       str   = typer.Option("data/frames_1600",      help="訓練影格目錄（預設優先使用縮圖後的 frames_1600）"),
+    colmap:       str   = typer.Option("outputs/SfM_models/sift/sparse/0",   help="COLMAP sparse/0 目錄（相對於專案根目錄）"),
+    outdir:       str   = typer.Option("outputs/3DGS_models",         help="輸出目錄（相對於專案根目錄）"),
+    iterations:   int   = typer.Option(30000,                  help="訓練迭代數（說明書建議 30000）"),
+    sh_degree:    int   = typer.Option(3,                      help="球諧函數階數（金屬場景建議 3）"),
+    densify_until:int   = typer.Option(15000,                  help="點雲密化截止迭代"),
+    scene_scale:  float = typer.Option(0.0,                    help="scene scale（公尺/unit），0=自動。用 scale_calibrate.py 算出後填入"),
+    scale_json:   str   = typer.Option("",                     help="直接讀 scale_calibrate.py 輸出的 JSON 路徑"),
+    eval_steps:   int   = typer.Option(1000,                   help="每幾步評估一次 PSNR"),
+    data_factor:  int   = typer.Option(1,                      help="影像縮放比例（已縮過就設 1）"),
+    validation_report: str = typer.Option("",                  help="指定本輪 SfM 驗證報告；未提供時會依 colmap/outdir 自動推導"),
+    params_json:  str   = typer.Option("",                     help="由 agent 產生的 train_params.json；提供後會套用建議參數"),
+):
+    # ── 初期化專案路徑（一次定義） ────────────────────
+    project_root = Path(__file__).parent.parent
+    
+    if params_json:
+        plan, recommended = _load_train_params(params_json)
+        console.print(
+            f"[cyan]套用 agent 訓練設定[/] {Path(params_json).resolve()} "
+            f"(profile={plan.get('profile_name', 'unknown')})"
+        )
+        if imgdir == DEFAULT_TRAIN_PARAMS["imgdir"]:
+            imgdir = str(recommended.get("imgdir", imgdir))
+        if colmap == DEFAULT_TRAIN_PARAMS["colmap"]:
+            colmap = str(recommended.get("colmap", colmap))
+        if outdir == DEFAULT_TRAIN_PARAMS["outdir"]:
+            outdir = str(recommended.get("outdir", outdir))
+        if iterations == DEFAULT_TRAIN_PARAMS["iterations"]:
+            iterations = int(recommended.get("iterations", iterations))
+        if sh_degree == DEFAULT_TRAIN_PARAMS["sh_degree"]:
+            sh_degree = int(recommended.get("sh_degree", sh_degree))
+        if densify_until == DEFAULT_TRAIN_PARAMS["densify_until"]:
+            densify_until = int(recommended.get("densify_until", densify_until))
+        if scene_scale == DEFAULT_TRAIN_PARAMS["scene_scale"]:
+            scene_scale = float(recommended.get("scene_scale", scene_scale))
+        if scale_json == DEFAULT_TRAIN_PARAMS["scale_json"]:
+            scale_json = str(recommended.get("scale_json", scale_json))
+        if eval_steps == DEFAULT_TRAIN_PARAMS["eval_steps"]:
+            eval_steps = int(recommended.get("eval_steps", eval_steps))
+        if data_factor == DEFAULT_TRAIN_PARAMS["data_factor"]:
+            data_factor = int(recommended.get("data_factor", data_factor))
+
+    # ── 前置檢查 ──────────────────────────────────
+    if not _check_gsplat():
+        console.print(Panel(
+            "[red]❌ 找不到可用的 gsplat 環境。[/]\n\n"
+            "請使用目前生產層的正式基線，而不是舊的臨時 workaround：\n\n"
+            "[yellow]1. 重建乾淨 .venv[/]\n"
+            "  Remove-Item .venv -Recurse -Force\n"
+            "  python -m venv .venv\n\n"
+            "[yellow]2. 依 requirements.txt 重裝[/]\n"
+            "  .\\.venv\\Scripts\\Activate.ps1\n"
+            "  python -m pip install --upgrade pip setuptools wheel\n"
+            "  python -m pip install -r requirements.txt\n\n"
+            "[yellow]3. 跑正式 smoke test[/]\n"
+            "  python test_cuda.py\n\n"
+            "[yellow]4. 避免舊環境變數[/]\n"
+            "  不要再沿用舊的 TORCH_CUDA_ARCH_LIST=12.0\n\n"
+            "如果 smoke test 仍失敗，請回頭看：\n"
+            "  安裝指南.md\n"
+            "  環境設置.md\n"
+            "  故障排查.md",
+            title="[bold red]缺少相依套件[/]",
+            border_style="red",
+        ))
+        raise typer.Exit(1)
+    
+    # ── 檢查點雲驗證報告 ────────────────────────────
+    validation_report_path = _resolve_validation_report(
+        project_root=project_root,
+        colmap=colmap,
+        outdir=outdir,
+        validation_report=validation_report,
+    )
+    _check_pointcloud_validation(str(validation_report_path))
+
+    img_p    = _resolve_imgdir(project_root, imgdir)
+    colmap_p = _resolve_sparse_model_dir(project_root, colmap, validation_report_path)
+    out_p    = project_root / outdir  # 绝对路径：project_root/outputs/3DGS_models
+
+    if not img_p.exists() or not any(img_p.iterdir()):
+        console.print(f"[red]影格目錄為空：{img_p.resolve()}[/]")
+        raise typer.Exit(1)
+    if not colmap_p.exists():
+        console.print(f"[red]COLMAP 目錄不存在：{colmap_p.resolve()}[/]")
+        raise typer.Exit(1)
+
+    n_imgs = len(list(img_p.glob("*.png"))) + len(list(img_p.glob("*.jpg")))
+    console.print(f"[cyan]影格[/]    {img_p}  ({n_imgs} 張)")
+    console.print(f"[cyan]COLMAP[/]  {colmap_p}")
+    console.print(f"[cyan]輸出[/]    {out_p}")
+
+    out_p.mkdir(parents=True, exist_ok=True)
+
+    # ── 讀取 scale（可選）────────────────────────
+    actual_scale = scene_scale
+    if scale_json:
+        sj = Path(scale_json)
+        if sj.exists():
+            data = json.loads(sj.read_text())
+            actual_scale = data.get("scale_m_per_unit", 0.0)
+            console.print(f"[green]scale_factor = {actual_scale:.6f} m/unit（來自 {sj.name}）[/]")
+        else:
+            console.print(f"[yellow]找不到 {sj}，使用預設 scale[/]")
+    elif actual_scale == 0.0:
+        console.print("[yellow]scene_scale = 0（自動估計）。若要精確公尺單位，請先跑 scale_calibrate.py[/]")
+
+    # -- Auto-create colmap_scene directory structure --
+    trainer      = project_root / "gsplat_runner" / "simple_trainer.py"
+    scene_dir    = project_root / "data" / "colmap_scene"
+
+    if not trainer.exists():
+        console.print(f"[red]Cannot find {trainer}[/]")
+        raise typer.Exit(1)
+
+    # Build colmap_scene: images/ -> imgdir, sparse/0/ -> colmap dir
+    images_link = scene_dir / "images"
+    sparse_link = scene_dir / "sparse" / "0"
+
+    if not images_link.exists() or not sparse_link.exists():
+        console.print("[yellow]Auto-creating colmap_scene directory...[/]")
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        (scene_dir / "sparse").mkdir(parents=True, exist_ok=True)
+
+        img_target = img_p.resolve()
+        sparse_target = colmap_p.resolve()
+
+        if not images_link.exists():
+            try:
+                images_link.symlink_to(img_target, target_is_directory=True)
+            except OSError:
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(images_link), str(img_target)], check=True)
+            console.print(f"  images -> {img_target}")
+
+        if not sparse_link.exists():
+            try:
+                sparse_link.symlink_to(sparse_target, target_is_directory=True)
+            except OSError:
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(sparse_link), str(sparse_target)], check=True)
+            console.print(f"  sparse/0 -> {sparse_target}")
+
+    # simple_trainer args
+    eval_schedule = _build_eval_schedule(eval_steps, iterations)
+
+    base_args = [
+        "default",
+        "--data-dir",    str(scene_dir),
+        "--result-dir",  str(out_p.resolve()),
+        "--max-steps",   str(iterations),
+        "--sh-degree",   str(sh_degree),
+        "--data-factor", str(data_factor),
+        "--disable-viewer",
+        "--init-type",   "sfm",
+        "--strategy.refine-stop-iter", str(densify_until),
+    ]
+
+    if eval_schedule:
+        base_args.append("--eval-steps")
+        base_args.extend(str(step) for step in eval_schedule)
+    
+    # 加入 scene_scale（如果有指定）
+    if actual_scale != 0.0:
+        base_args.extend(["--global-scale", f"{actual_scale:.6f}"])
+
+    cmd = [sys.executable, str(trainer)] + base_args
+    runner_dir = str(trainer.parent)  # cwd = gsplat_runner/
+
+    console.print(f"[dim]cwd: {runner_dir}[/]")
+
+    console.print()
+    console.print(Panel(
+        f"迭代數:     {iterations:,}\n"
+        f"球諧階數:   {sh_degree}\n"
+        f"密化截止:   {densify_until:,}\n"
+        f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
+        + (" ..." if len(eval_schedule) > 5 else "") + "\n"
+        f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}\n\n"
+        f"[dim]RTX 5070 Ti 預計訓練時間：~60-90 min[/]",
+        title="[bold green]Phase 1B Training Params[/]",
+        border_style="green",
+    ))
+
+    try:
+        _run(cmd, cwd=runner_dir)
+    except subprocess.CalledProcessError:
+        console.print(Panel(
+            "訓練中途失敗。常見原因：\n"
+            "  1. GPU 顯存不足 → 減少 --densify-until 或降低影像解析度\n"
+            "  2. gsplat CUDA kernel 未編譯 → 嘗試 pip install gsplat --no-cache-dir\n"
+            "  3. simple_trainer 參數版本不符 → pip install --upgrade gsplat",
+            title="[bold red]訓練失敗[/]",
+            border_style="red",
+        ))
+        raise typer.Exit(1)
+
+    # ── 完成後輸出摘要 ────────────────────────────
+    splats = list(out_p.rglob("*.ply")) + list(out_p.rglob("*.splat"))
+    console.print(Panel(
+        f"輸出目錄：{out_p.resolve()}\n"
+        + ("\n".join(f"  {p.relative_to(out_p)}" for p in splats) if splats else "  （尚無 .ply/.splat，請確認輸出格式）"),
+        title="[bold green]Phase 1B 完成 ✓[/]",
+        border_style="green",
+    ))
+    console.print("\n[bold]Phase 2 Next:[/]")
+    console.print("  -> python -m src.export_ply")
+    console.print("  -> python -m src.export_ply_unity --unity")
+
+
+if __name__ == "__main__":
+    app()
