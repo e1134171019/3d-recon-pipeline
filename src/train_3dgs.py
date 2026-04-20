@@ -53,11 +53,21 @@ DEFAULT_TRAIN_PARAMS = {
     "antialiased": False,
     "random_bkgd": False,
     "cap_max": 1_000_000,
+    "mcmc_min_opacity": None,
+    "mcmc_noise_lr": None,
     "opacity_reg": 0.0,
     "pose_opt": False,
     "app_opt": False,
     "disable_video": False,
     "loss_mask_dir": "",
+}
+
+MCMC_PRESET_DEFAULTS = {
+    "opacity_reg": 0.01,
+    "scale_reg": 0.01,
+    "min_opacity": 0.005,
+    "noise_lr": 500000.0,
+    "cap_max": 1_000_000,
 }
 
 def _read_json_robust(path: Path) -> dict:
@@ -340,6 +350,54 @@ def _build_eval_schedule(step_interval: int, max_steps: int) -> list[int]:
     return sorted(set(schedule))
 
 
+def _resolve_effective_train_config(
+    train_mode: str,
+    *,
+    absgrad: bool,
+    grow_grad2d: float,
+    antialiased: bool,
+    random_bkgd: bool,
+    cap_max: int,
+    mcmc_min_opacity: float | None,
+    mcmc_noise_lr: float | None,
+    opacity_reg: float,
+    pose_opt: bool,
+    app_opt: bool,
+) -> dict:
+    """Resolve the effective trainer values after preset defaults are applied.
+
+    The wrapper defaults are not always the runtime truth. In particular,
+    `mcmc` inherits preset values from gsplat's trainer even when the wrapper
+    does not emit an explicit CLI override.
+    """
+    effective = {
+        "absgrad": absgrad,
+        "grow_grad2d": grow_grad2d,
+        "antialiased": antialiased,
+        "random_bkgd": random_bkgd,
+        "cap_max": cap_max,
+        "mcmc_min_opacity": mcmc_min_opacity,
+        "mcmc_noise_lr": mcmc_noise_lr,
+        "opacity_reg": opacity_reg,
+        "pose_opt": pose_opt,
+        "app_opt": app_opt,
+        "mcmc_scale_reg": None,
+    }
+
+    if train_mode == "mcmc":
+        if opacity_reg <= 0.0:
+            effective["opacity_reg"] = MCMC_PRESET_DEFAULTS["opacity_reg"]
+        effective["mcmc_scale_reg"] = MCMC_PRESET_DEFAULTS["scale_reg"]
+        if mcmc_min_opacity is None:
+            effective["mcmc_min_opacity"] = MCMC_PRESET_DEFAULTS["min_opacity"]
+        if mcmc_noise_lr is None:
+            effective["mcmc_noise_lr"] = MCMC_PRESET_DEFAULTS["noise_lr"]
+        if cap_max == DEFAULT_TRAIN_PARAMS["cap_max"]:
+            effective["cap_max"] = MCMC_PRESET_DEFAULTS["cap_max"]
+
+    return effective
+
+
 @app.command()
 def main(
     train_mode:   str   = typer.Option("default",              help="trainer preset：default 或 mcmc"),
@@ -358,6 +416,8 @@ def main(
     antialiased:  bool  = typer.Option(False,                  help="開啟 antialiasing rasterization（偏視覺改善）"),
     random_bkgd:  bool  = typer.Option(False,                  help="訓練時使用隨機背景，抑制透明/浮點傾向"),
     cap_max:      int   = typer.Option(1_000_000,              help="MCMC 最大 Gaussian 顆數上限；default preset 會忽略"),
+    mcmc_min_opacity: float | None = typer.Option(None,        help="MCMCStrategy 的 min_opacity；未提供時使用 gsplat preset 預設值"),
+    mcmc_noise_lr: float | None = typer.Option(None,           help="MCMCStrategy 的 noise_lr；未提供時使用 gsplat preset 預設值"),
     opacity_reg:  float = typer.Option(0.0,                    help="透明度正則化；抑制半透明浮點/浮球"),
     pose_opt:     bool  = typer.Option(False,                  help="啟用 camera pose optimization，微調相機位姿"),
     app_opt:      bool  = typer.Option(False,                  help="啟用 appearance optimization，吸收幀間外觀差異"),
@@ -407,6 +467,10 @@ def main(
             random_bkgd = bool(recommended.get("random_bkgd", random_bkgd))
         if cap_max == DEFAULT_TRAIN_PARAMS["cap_max"]:
             cap_max = int(recommended.get("cap_max", cap_max))
+        if mcmc_min_opacity == DEFAULT_TRAIN_PARAMS["mcmc_min_opacity"]:
+            mcmc_min_opacity = recommended.get("mcmc_min_opacity", mcmc_min_opacity)
+        if mcmc_noise_lr == DEFAULT_TRAIN_PARAMS["mcmc_noise_lr"]:
+            mcmc_noise_lr = recommended.get("mcmc_noise_lr", mcmc_noise_lr)
         if opacity_reg == DEFAULT_TRAIN_PARAMS["opacity_reg"]:
             opacity_reg = float(recommended.get("opacity_reg", opacity_reg))
         if pose_opt == DEFAULT_TRAIN_PARAMS["pose_opt"]:
@@ -530,6 +594,10 @@ def main(
         base_args.extend(["--strategy.grow-grad2d", str(grow_grad2d)])
     elif train_mode == "mcmc":
         base_args.extend(["--strategy.cap-max", str(cap_max)])
+        if mcmc_min_opacity is not None:
+            base_args.extend(["--strategy.min-opacity", str(mcmc_min_opacity)])
+        if mcmc_noise_lr is not None:
+            base_args.extend(["--strategy.noise-lr", str(mcmc_noise_lr)])
 
     if eval_schedule:
         base_args.append("--eval-steps")
@@ -558,32 +626,64 @@ def main(
 
     cmd = [sys.executable, str(trainer)] + base_args
     runner_dir = str(trainer.parent)  # cwd = gsplat_runner/
+    effective_cfg = _resolve_effective_train_config(
+        train_mode,
+        absgrad=absgrad,
+        grow_grad2d=grow_grad2d,
+        antialiased=antialiased,
+        random_bkgd=random_bkgd,
+        cap_max=cap_max,
+        mcmc_min_opacity=mcmc_min_opacity,
+        mcmc_noise_lr=mcmc_noise_lr,
+        opacity_reg=opacity_reg,
+        pose_opt=pose_opt,
+        app_opt=app_opt,
+    )
 
     console.print(f"[dim]cwd: {runner_dir}[/]")
 
     console.print()
-    console.print(Panel(
-        f"Preset:      {train_mode}\n"
-        f"迭代數:     {iterations:,}\n"
-        f"球諧階數:   {sh_degree}\n"
-        f"密化截止:   {densify_until:,}\n"
-        f"AbsGrad:    {'ON' if absgrad else 'OFF'}\n"
-        f"grow_grad2d:{grow_grad2d:.4f}\n"
-        f"AA:         {'ON' if antialiased else 'OFF'}\n"
-        f"Rnd Bkgd:   {'ON' if random_bkgd else 'OFF'}\n"
-        f"Cap Max:    {cap_max:,}\n"
-        f"OpacityReg: {opacity_reg:.4f}\n"
-        f"Pose Opt:   {'ON' if pose_opt else 'OFF'}\n"
-        f"App Opt:    {'ON' if app_opt else 'OFF'}\n"
-        f"Video:      {'OFF' if disable_video else 'ON'}\n"
-        f"Loss Mask:  {str(loss_mask_p.resolve()) if loss_mask_p is not None else 'OFF'}\n"
-        f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
-        + (" ..." if len(eval_schedule) > 5 else "") + "\n"
-        f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}\n\n"
-        f"[dim]RTX 5070 Ti 預計訓練時間：~60-90 min[/]",
-        title="[bold green]Phase 1B Training Params[/]",
-        border_style="green",
-    ))
+    summary_lines = [
+        f"Preset:      {train_mode}",
+        f"迭代數:     {iterations:,}",
+        f"球諧階數:   {sh_degree}",
+        f"密化截止:   {densify_until:,}",
+        f"AbsGrad:    {'ON' if effective_cfg['absgrad'] else 'OFF'}",
+        f"grow_grad2d:{effective_cfg['grow_grad2d']:.4f}",
+        f"AA:         {'ON' if effective_cfg['antialiased'] else 'OFF'}",
+        f"Rnd Bkgd:   {'ON' if effective_cfg['random_bkgd'] else 'OFF'}",
+        f"Cap Max:    {effective_cfg['cap_max']:,}",
+        f"OpacityReg: {effective_cfg['opacity_reg']:.4f}",
+        f"Pose Opt:   {'ON' if effective_cfg['pose_opt'] else 'OFF'}",
+        f"App Opt:    {'ON' if effective_cfg['app_opt'] else 'OFF'}",
+    ]
+    if train_mode == "mcmc":
+        summary_lines.extend(
+            [
+                f"MCMC min_opa: {effective_cfg['mcmc_min_opacity']:.4f}",
+                f"MCMC noise_lr:{effective_cfg['mcmc_noise_lr']:.0f}",
+                f"MCMC scale_reg:{effective_cfg['mcmc_scale_reg']:.4f}",
+            ]
+        )
+    summary_lines.extend(
+        [
+            f"Video:      {'OFF' if disable_video else 'ON'}",
+            f"Loss Mask:  {str(loss_mask_p.resolve()) if loss_mask_p is not None else 'OFF'}",
+            f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
+            + (" ..." if len(eval_schedule) > 5 else ""),
+            f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}",
+            "",
+            "[dim]註：此處顯示的是 trainer 最終生效值，不是 wrapper 預設值。[/]",
+            "[dim]RTX 5070 Ti 預計訓練時間：~60-90 min[/]",
+        ]
+    )
+    console.print(
+        Panel(
+            "\n".join(summary_lines),
+            title="[bold green]Phase 1B Training Params[/]",
+            border_style="green",
+        )
+    )
 
     try:
         _run(cmd, cwd=runner_dir)

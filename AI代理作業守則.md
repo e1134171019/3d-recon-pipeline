@@ -64,6 +64,7 @@
 ### 比較戒律
 - 不可直接拿不同 validation view set 的 `LPIPS` 做嚴格比較。
 - 不可拿被污染的 run（例如 scene dir / frame count 不一致）當正式證據。
+- wrapper 預設值不等於 trainer 最終生效值；遇到 `mcmc` 等 preset 模式時，必須先確認 effective config / preset resolution，再下根因判斷。
 - 正式結論優先使用：
   - 同一資料 regime
   - 同一 eval views

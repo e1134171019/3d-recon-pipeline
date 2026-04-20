@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -7,6 +6,7 @@ import cv2
 import numpy as np
 
 from src import downscale_frames, preprocess_phase0
+from _workspace_temp import workspace_tempdir
 
 
 class PreprocessAndDownscaleTests(unittest.TestCase):
@@ -40,9 +40,9 @@ class PreprocessAndDownscaleTests(unittest.TestCase):
         self.assertEqual(reason, "brightness")
 
     def test_sample_validation_set_outputs_uniform_subset(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cleaned_dir = Path(tmp) / "frames_cleaned"
-            val_dir = Path(tmp) / "frames_val"
+        with workspace_tempdir("preprocess_val_") as tmp:
+            cleaned_dir = tmp / "frames_cleaned"
+            val_dir = tmp / "frames_val"
             cleaned_dir.mkdir()
             for idx in range(60):
                 image = np.full((12, 12, 3), idx, dtype=np.uint8)
@@ -60,9 +60,9 @@ class PreprocessAndDownscaleTests(unittest.TestCase):
             self.assertEqual(len(list(val_dir.glob("frame_*.jpg"))), 50)
 
     def test_downscale_main_resizes_to_requested_max_side(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            src_dir = Path(tmp) / "src"
-            dst_dir = Path(tmp) / "dst"
+        with workspace_tempdir("downscale_") as tmp:
+            src_dir = tmp / "src"
+            dst_dir = tmp / "dst"
             src_dir.mkdir()
             image = np.full((1000, 2000, 3), 127, dtype=np.uint8)
             cv2.imwrite(str(src_dir / "frame_000000.jpg"), image)

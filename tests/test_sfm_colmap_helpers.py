@@ -1,16 +1,18 @@
 import json
 import sqlite3
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from src import sfm_colmap
+from _workspace_temp import workspace_tempdir
 
 
 def _build_feature_db(path: Path, keypoint_rows: list[int], descriptor_rows: list[int]) -> Path:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=MEMORY")
+    cur.execute("PRAGMA synchronous=OFF")
     cur.execute("CREATE TABLE keypoints(image_id INTEGER, rows INTEGER)")
     cur.execute("CREATE TABLE descriptors(image_id INTEGER, rows INTEGER)")
     cur.executemany("INSERT INTO keypoints VALUES (?, ?)", list(enumerate(keypoint_rows, start=1)))
@@ -25,6 +27,8 @@ def _build_feature_db(path: Path, keypoint_rows: list[int], descriptor_rows: lis
 def _build_matching_db(path: Path, match_rows: list[int], inlier_rows: list[int]) -> Path:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=MEMORY")
+    cur.execute("PRAGMA synchronous=OFF")
     cur.execute("CREATE TABLE matches(pair_id INTEGER, rows INTEGER)")
     cur.execute("CREATE TABLE two_view_geometries(pair_id INTEGER, rows INTEGER)")
     cur.executemany("INSERT INTO matches VALUES (?, ?)", list(enumerate(match_rows, start=1)))
@@ -47,8 +51,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertTrue(resolved.endswith(r"installers\glomap-1.2.0\bin\glomap.exe"))
 
     def test_run_mapper_step_uses_glomap_output_sparse_root(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            work_p = Path(tmp) / "SfM_models" / "sift"
+        with workspace_tempdir("sfm_mapper_") as tmp:
+            work_p = tmp / "SfM_models" / "sift"
             work_p.mkdir(parents=True)
             with mock.patch.object(sfm_colmap, "run") as mocked_run:
                 sfm_colmap._run_mapper_step(
@@ -70,8 +74,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertEqual(inferred, project_root / "outputs" / "runs" / "r1")
 
     def test_find_best_sparse_model_prefers_more_registered_images_then_points(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sparse_root = Path(tmp)
+        with workspace_tempdir("sfm_sparse_best_") as tmp:
+            sparse_root = tmp
             model0 = sparse_root / "0"
             model1 = sparse_root / "1"
             model0.mkdir()
@@ -92,8 +96,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertEqual(best, model1)
 
     def test_find_best_sparse_model_accepts_nested_glomap_layout(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sparse_root = Path(tmp)
+        with workspace_tempdir("sfm_sparse_nested_") as tmp:
+            sparse_root = tmp
             nested = sparse_root / "0" / "0"
             nested.mkdir(parents=True)
             for name in ("cameras.bin", "images.bin", "points3D.bin"):
@@ -126,8 +130,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertIn("偏低", assessment)
 
     def test_check_features_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = _build_feature_db(Path(tmp) / "database.db", [600, 800, 1000], [600, 800, 1000])
+        with workspace_tempdir("sfm_features_") as tmp:
+            db = _build_feature_db(tmp / "database.db", [600, 800, 1000], [600, 800, 1000])
             with mock.patch("builtins.print"):
                 result = sfm_colmap.check_features(str(db))
             self.assertTrue(result["pass"])
@@ -136,8 +140,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertGreater(result["avg_features_per_image"], 500)
 
     def test_check_matching_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = _build_matching_db(Path(tmp) / "database.db", [500, 700, 800], [300, 500, 600])
+        with workspace_tempdir("sfm_matching_") as tmp:
+            db = _build_matching_db(tmp / "database.db", [500, 700, 800], [300, 500, 600])
             with mock.patch("builtins.print"):
                 result = sfm_colmap.check_matching(str(db))
             self.assertTrue(result["pass"])
@@ -146,9 +150,9 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertGreater(result["inlier_ratio"], 0.1)
 
     def test_check_reconstruction_success_and_export_signals(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sparse_dir = Path(tmp) / "sparse" / "0"
-            reports_dir = Path(tmp) / "reports"
+        with workspace_tempdir("sfm_recon_") as tmp:
+            sparse_dir = tmp / "sparse" / "0"
+            reports_dir = tmp / "reports"
             sparse_dir.mkdir(parents=True)
             reports_dir.mkdir()
             (sparse_dir / "cameras.bin").write_bytes(b"x" * 64)

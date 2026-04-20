@@ -1,0 +1,1 @@
+{"profile_name": "demo", "train_params": {"recommended_params": {"iterations": 40000, "grow_grad2d": 0.0008}}}

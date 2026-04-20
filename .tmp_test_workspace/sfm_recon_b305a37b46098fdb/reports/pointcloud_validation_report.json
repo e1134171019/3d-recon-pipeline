@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-04-20T23:48:23.079285",
+  "sparse_dir": "C:\\3d-recon-pipeline\\.tmp_test_workspace\\sfm_recon_b305a37b46098fdb\\sparse\\0",
+  "cameras_count": 1,
+  "images_count": 60,
+  "registered_images_count": 60,
+  "points3d_count": 60000,
+  "can_proceed_to_3dgs": true,
+  "diagnosis": "SfM 重建成功，可進行 3DGS 訓練"
+}

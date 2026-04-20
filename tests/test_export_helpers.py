@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -7,6 +6,7 @@ import numpy as np
 import torch
 
 from src import export_ply, export_ply_unity
+from _workspace_temp import workspace_tempdir
 
 
 class ExportHelpersTests(unittest.TestCase):
@@ -33,8 +33,8 @@ class ExportHelpersTests(unittest.TestCase):
         np.testing.assert_allclose(out_scales, scales, atol=1e-6)
 
     def test_write_ply_unity_creates_binary_ply(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out_path = Path(tmp) / "unity.ply"
+        with workspace_tempdir("export_unity_") as tmp:
+            out_path = tmp / "unity.ply"
             means = np.array([[0.0, 1.0, 2.0]], dtype=np.float32)
             scales = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
             quats = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
@@ -51,8 +51,8 @@ class ExportHelpersTests(unittest.TestCase):
             self.assertIn("property float rot_3", header)
 
     def test_write_ply_manual_creates_binary_ply(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out_path = Path(tmp) / "standard.ply"
+        with workspace_tempdir("export_standard_") as tmp:
+            out_path = tmp / "standard.ply"
             splats = {
                 "means": torch.tensor([[0.0, 1.0, 2.0]], dtype=torch.float32),
                 "scales": torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32),
