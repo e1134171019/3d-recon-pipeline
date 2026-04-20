@@ -17,6 +17,20 @@ public class GaussianSplatImporter : Editor
     const string OUTPUT_FOLDER = "Assets/GaussianAssets";
     const string PIPELINE_PLY_DIR = "C:/3d-recon-pipeline/outputs/3DGS_models/ply";
 
+    static void EnsureOrbitCamera(Camera cam)
+    {
+        var orbit = cam.GetComponent<OrbitCamera>();
+        if (orbit == null)
+        {
+            orbit = cam.gameObject.AddComponent<OrbitCamera>();
+        }
+
+        orbit.target = Vector3.zero;
+        orbit.orbitSpeed = 200f;
+        orbit.panSpeed = 0.003f;
+        orbit.zoomSpeed = 0.5f;
+    }
+
     [MenuItem("FactoryScene/0. Sync Latest Pipeline PLY")]
     public static void SyncLatestPipelinePly()
     {
@@ -147,6 +161,7 @@ public class GaussianSplatImporter : Editor
         cam.transform.position = new Vector3(0, 1.5f, -3f);
         cam.transform.LookAt(Vector3.zero);
         cam.fieldOfView = 60f;
+        EnsureOrbitCamera(cam);
 
         // 建立 GaussianSplatRenderer GameObject（需插件）
         var splatGO = new GameObject("FactorySplat");
@@ -175,6 +190,29 @@ public class GaussianSplatImporter : Editor
             $"場景路徑：{SCENE_PATH}\n\n" +
             "請在 Hierarchy 中選擇 FactorySplat，\n" +
             "將匯入的 GaussianSplatAsset 拖入 Asset 欄位。",
+            "OK");
+    }
+
+    [MenuItem("FactoryScene/4. Attach Orbit Camera To Current Scene")]
+    public static void AttachOrbitCameraToCurrentScene()
+    {
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            EditorUtility.DisplayDialog("找不到 Main Camera", "目前場景沒有 Main Camera。", "OK");
+            return;
+        }
+
+        EnsureOrbitCamera(cam);
+        EditorUtility.SetDirty(cam.gameObject);
+        if (SceneManager.GetActiveScene().IsValid())
+        {
+            EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+        }
+
+        EditorUtility.DisplayDialog(
+            "Orbit Camera 已掛上",
+            "Main Camera 現在已具備：\n\n左鍵旋轉\n右鍵平移\n滾輪縮放\n雙擊左鍵重置",
             "OK");
     }
 

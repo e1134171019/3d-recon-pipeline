@@ -10,6 +10,10 @@
   - 尚未補完整驗證閉環的資料集工具
 - `diagnose_video.py`
   - 手動診斷輔助工具，不是正式 pipeline 入口
+- `runners/`
+  - 已完成或暫停的實驗入口腳本歸檔區
+- `scripts/`
+  - 舊 watcher、probe 啟動器與一次性轉換腳本歸檔區
 
 原則：
 

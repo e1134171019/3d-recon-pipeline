@@ -37,6 +37,24 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal, assert_never
 from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_random_seed
 
+
+def _patch_windows_cpp_extension_decode() -> None:
+    """Force a tolerant decode path for Windows JIT compiler probing."""
+    if os.name != "nt":
+        return
+    try:
+        from torch.utils import cpp_extension
+
+        # Torch defaults to the OEM code page on Windows. On localized systems
+        # this can fail before the compiler version regex is parsed, so we force
+        # a tolerant UTF-8 decode path for subprocess output.
+        cpp_extension.SUBPROCESS_DECODE_ARGS = ("utf-8", "replace")
+    except Exception:
+        pass
+
+
+_patch_windows_cpp_extension_decode()
+
 from gsplat import export_splats
 from gsplat.compression import PngCompression
 from gsplat.distributed import cli
@@ -133,6 +151,9 @@ class Config:
 
     # Use random background for training to discourage transparency
     random_bkgd: bool = False
+    # Optional directory of binary masks used only for training loss masking.
+    # Convention: non-zero pixels are excluded; zero pixels are kept.
+    loss_mask_dir: str = ""
 
     # LR for 3D point positions
     means_lr: float = 1.6e-4
@@ -349,6 +370,7 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
+            loss_mask_dir=cfg.loss_mask_dir or None,
         )
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
@@ -627,6 +649,11 @@ class Runner:
             )
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
+            loss_masks = (
+                data["loss_mask"].to(device).unsqueeze(-1)
+                if "loss_mask" in data
+                else None
+            )  # [1, H, W, 1]
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
                 depths_gt = data["depths"].to(device)  # [1, M]
@@ -687,9 +714,19 @@ class Runner:
             )
 
             # loss
-            l1loss = F.l1_loss(colors, pixels)
+            colors_for_loss = colors
+            pixels_for_loss = pixels
+            if loss_masks is not None:
+                # Outside the keep mask, replace the prediction with the target so those
+                # pixels contribute zero loss while preserving the original input images.
+                colors_for_loss = torch.where(loss_masks, colors, pixels)
+                pixels_for_loss = pixels
+
+            l1loss = F.l1_loss(colors_for_loss, pixels_for_loss)
             ssimloss = 1.0 - _fused_ssim(
-                colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
+                colors_for_loss.permute(0, 3, 1, 2),
+                pixels_for_loss.permute(0, 3, 1, 2),
+                padding="valid",
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:

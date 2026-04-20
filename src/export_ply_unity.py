@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from src.utils.agent_contracts import infer_outputs_root, write_stage_contract
 
 
 # ─── Quaternion helpers (wxyz convention) ────────────────────────────
@@ -280,6 +281,36 @@ def main():
 
     _write_ply(means, scales, quats, opacities, sh0, shN, out_path)
     print(f"\n[完成] PLY 已匯出至 {out_path}")
+
+    project_root = Path(__file__).parent.parent
+    outputs_root = infer_outputs_root(project_root, out_path)
+    contract_paths = write_stage_contract(
+        project_root=project_root,
+        run_root=outputs_root,
+        stage="export_complete",
+        status="completed",
+        artifacts={
+            "checkpoint": ckpt_path,
+            "data_dir": Path(args.data_dir),
+            "ply_file": out_path,
+            "params_json": Path(args.params_json) if args.params_json else "",
+        },
+        metrics={
+            "num_splats": int(means.shape[0]),
+            "ply_size_mb": round(out_path.stat().st_size / (1024 ** 2), 3),
+            "min_opacity": args.min_opacity,
+            "max_scale": args.max_scale,
+        },
+        params={
+            "unity": args.unity,
+            "no_denormalize": args.no_denormalize,
+            "min_opacity": args.min_opacity,
+            "max_scale": args.max_scale,
+        },
+        summary="PLY export complete",
+    )
+    print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
+    print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
 
 
 def _write_ply(means, scales, quats, opacities, sh0, shN, out_path: Path):

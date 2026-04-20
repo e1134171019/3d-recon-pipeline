@@ -1,5 +1,5 @@
 // Assets/Editor/GaussianSplatBatchImport.cs
-// 可在 Unity GUI 或 batch mode 下重新匯入最新的 point_cloud_unity.ply
+// 可在 Unity GUI 或 batch mode 下重新匯入指定名稱的 Gaussian PLY
 
 #if UNITY_EDITOR
 using System;
@@ -12,6 +12,7 @@ using UnityEngine;
 
 public static class GaussianSplatBatchImport
 {
+    const string SPLAT_FOLDER = "Assets/GaussianSplats";
     const string INPUT_FILE = "Assets/GaussianSplats/point_cloud_unity.ply";
     const string INPUT_FILE_PRUNED = "Assets/GaussianSplats/point_cloud_unity_pruned.ply";
     const string INPUT_FILE_A_PRUNED = "Assets/GaussianSplats/point_cloud_unity_A_pruned.ply";
@@ -28,6 +29,31 @@ public static class GaussianSplatBatchImport
     public static void ImportLatestPointCloudUnity()
     {
         ImportPointCloudUnity(INPUT_FILE, true);
+    }
+
+    public static void ImportPointCloudUnityByName()
+    {
+        var args = Environment.GetCommandLineArgs();
+        string assetBaseName = null;
+
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i] == "-assetBaseName")
+            {
+                assetBaseName = args[i + 1];
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(assetBaseName))
+        {
+            Debug.LogError("[GaussianSplatBatchImport] 缺少 -assetBaseName 參數");
+            EditorApplication.Exit(1);
+            return;
+        }
+
+        var inputFile = $"{SPLAT_FOLDER}/{assetBaseName}.ply";
+        ImportPointCloudUnity(inputFile, true);
     }
 
     [MenuItem("FactoryScene/5. Reimport pruned point_cloud_unity.asset")]

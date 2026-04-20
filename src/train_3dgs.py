@@ -26,16 +26,18 @@ Full params:
       --sh-degree 3
 """
 
-import subprocess, sys, json
+import subprocess, sys, json, shutil
 from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from src.utils.agent_contracts import find_latest_step_file, infer_outputs_root, write_stage_contract
 
 app   = typer.Typer(help="Phase 1B: gsplat 3DGS 訓練")
 console = Console()
 
 DEFAULT_TRAIN_PARAMS = {
+    "train_mode": "default",
     "imgdir": "data/frames_1600",
     "colmap": "outputs/SfM_models/sift/sparse/0",
     "outdir": "outputs/3DGS_models",
@@ -46,6 +48,16 @@ DEFAULT_TRAIN_PARAMS = {
     "scale_json": "",
     "eval_steps": 1000,
     "data_factor": 1,
+    "absgrad": False,
+    "grow_grad2d": 0.0002,
+    "antialiased": False,
+    "random_bkgd": False,
+    "cap_max": 1_000_000,
+    "opacity_reg": 0.0,
+    "pose_opt": False,
+    "app_opt": False,
+    "disable_video": False,
+    "loss_mask_dir": "",
 }
 
 def _read_json_robust(path: Path) -> dict:
@@ -69,6 +81,8 @@ def _check_gsplat() -> bool:
 
 def _run(cmd: list[str], cwd: str | None = None) -> None:
     env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     stale_arch = env.get("TORCH_CUDA_ARCH_LIST")
     if stale_arch:
         console.print(
@@ -251,6 +265,51 @@ def _resolve_sparse_model_dir(
     return requested
 
 
+def _remove_path(path: Path) -> None:
+    """Remove files, normal directories, symlinks, or Windows junctions safely."""
+    if not path.exists() and not path.is_symlink():
+        return
+
+    try:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            return
+    except OSError:
+        pass
+
+    try:
+        os.rmdir(path)
+        return
+    except OSError:
+        shutil.rmtree(path)
+
+
+def _create_directory_link(link_path: Path, target_path: Path) -> None:
+    """Create a directory symlink, or fall back to a Windows junction."""
+    try:
+        link_path.symlink_to(target_path, target_is_directory=True)
+    except OSError:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+            check=True,
+        )
+
+
+def _ensure_scene_dir(scene_dir: Path, img_target: Path, sparse_target: Path) -> None:
+    """Build a per-run colmap scene directory to avoid cross-run contamination."""
+    images_link = scene_dir / "images"
+    sparse_link = scene_dir / "sparse" / "0"
+
+    if scene_dir.exists():
+        _remove_path(scene_dir)
+
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    (scene_dir / "sparse").mkdir(parents=True, exist_ok=True)
+
+    _create_directory_link(images_link, img_target)
+    _create_directory_link(sparse_link, sparse_target)
+
+
 def _load_train_params(params_json: str) -> tuple[dict, dict]:
     """Load agent-provided training params.
 
@@ -283,6 +342,7 @@ def _build_eval_schedule(step_interval: int, max_steps: int) -> list[int]:
 
 @app.command()
 def main(
+    train_mode:   str   = typer.Option("default",              help="trainer preset：default 或 mcmc"),
     imgdir:       str   = typer.Option("data/frames_1600",      help="訓練影格目錄（預設優先使用縮圖後的 frames_1600）"),
     colmap:       str   = typer.Option("outputs/SfM_models/sift/sparse/0",   help="COLMAP sparse/0 目錄（相對於專案根目錄）"),
     outdir:       str   = typer.Option("outputs/3DGS_models",         help="輸出目錄（相對於專案根目錄）"),
@@ -293,6 +353,16 @@ def main(
     scale_json:   str   = typer.Option("",                     help="直接讀 scale_calibrate.py 輸出的 JSON 路徑"),
     eval_steps:   int   = typer.Option(1000,                   help="每幾步評估一次 PSNR"),
     data_factor:  int   = typer.Option(1,                      help="影像縮放比例（已縮過就設 1）"),
+    absgrad:      bool  = typer.Option(False,                  help="使用 absolute gradients 觸發 densification（AbsGS 方向）"),
+    grow_grad2d:  float = typer.Option(0.0002,                 help="2D gradient densification 門檻；配合 absgrad 時常需提高"),
+    antialiased:  bool  = typer.Option(False,                  help="開啟 antialiasing rasterization（偏視覺改善）"),
+    random_bkgd:  bool  = typer.Option(False,                  help="訓練時使用隨機背景，抑制透明/浮點傾向"),
+    cap_max:      int   = typer.Option(1_000_000,              help="MCMC 最大 Gaussian 顆數上限；default preset 會忽略"),
+    opacity_reg:  float = typer.Option(0.0,                    help="透明度正則化；抑制半透明浮點/浮球"),
+    pose_opt:     bool  = typer.Option(False,                  help="啟用 camera pose optimization，微調相機位姿"),
+    app_opt:      bool  = typer.Option(False,                  help="啟用 appearance optimization，吸收幀間外觀差異"),
+    disable_video: bool = typer.Option(False,                  help="停用 trajectory 影片輸出，適合短訓練 smoke test"),
+    loss_mask_dir: str = typer.Option("",                      help="只在訓練 loss 中使用的 mask 目錄；非零像素視為排除區"),
     validation_report: str = typer.Option("",                  help="指定本輪 SfM 驗證報告；未提供時會依 colmap/outdir 自動推導"),
     params_json:  str   = typer.Option("",                     help="由 agent 產生的 train_params.json；提供後會套用建議參數"),
 ):
@@ -305,6 +375,8 @@ def main(
             f"[cyan]套用 agent 訓練設定[/] {Path(params_json).resolve()} "
             f"(profile={plan.get('profile_name', 'unknown')})"
         )
+        if train_mode == DEFAULT_TRAIN_PARAMS["train_mode"]:
+            train_mode = str(recommended.get("train_mode", train_mode))
         if imgdir == DEFAULT_TRAIN_PARAMS["imgdir"]:
             imgdir = str(recommended.get("imgdir", imgdir))
         if colmap == DEFAULT_TRAIN_PARAMS["colmap"]:
@@ -325,6 +397,26 @@ def main(
             eval_steps = int(recommended.get("eval_steps", eval_steps))
         if data_factor == DEFAULT_TRAIN_PARAMS["data_factor"]:
             data_factor = int(recommended.get("data_factor", data_factor))
+        if absgrad == DEFAULT_TRAIN_PARAMS["absgrad"]:
+            absgrad = bool(recommended.get("absgrad", absgrad))
+        if grow_grad2d == DEFAULT_TRAIN_PARAMS["grow_grad2d"]:
+            grow_grad2d = float(recommended.get("grow_grad2d", grow_grad2d))
+        if antialiased == DEFAULT_TRAIN_PARAMS["antialiased"]:
+            antialiased = bool(recommended.get("antialiased", antialiased))
+        if random_bkgd == DEFAULT_TRAIN_PARAMS["random_bkgd"]:
+            random_bkgd = bool(recommended.get("random_bkgd", random_bkgd))
+        if cap_max == DEFAULT_TRAIN_PARAMS["cap_max"]:
+            cap_max = int(recommended.get("cap_max", cap_max))
+        if opacity_reg == DEFAULT_TRAIN_PARAMS["opacity_reg"]:
+            opacity_reg = float(recommended.get("opacity_reg", opacity_reg))
+        if pose_opt == DEFAULT_TRAIN_PARAMS["pose_opt"]:
+            pose_opt = bool(recommended.get("pose_opt", pose_opt))
+        if app_opt == DEFAULT_TRAIN_PARAMS["app_opt"]:
+            app_opt = bool(recommended.get("app_opt", app_opt))
+        if disable_video == DEFAULT_TRAIN_PARAMS["disable_video"]:
+            disable_video = bool(recommended.get("disable_video", disable_video))
+        if loss_mask_dir == DEFAULT_TRAIN_PARAMS["loss_mask_dir"]:
+            loss_mask_dir = str(recommended.get("loss_mask_dir", loss_mask_dir))
 
     # ── 前置檢查 ──────────────────────────────────
     if not _check_gsplat():
@@ -339,16 +431,21 @@ def main(
             "  python -m pip install --upgrade pip setuptools wheel\n"
             "  python -m pip install -r requirements.txt\n\n"
             "[yellow]3. 跑正式 smoke test[/]\n"
-            "  python test_cuda.py\n\n"
+            "  python scripts/test_cuda.py\n\n"
             "[yellow]4. 避免舊環境變數[/]\n"
             "  不要再沿用舊的 TORCH_CUDA_ARCH_LIST=12.0\n\n"
             "如果 smoke test 仍失敗，請回頭看：\n"
-            "  安裝指南.md\n"
-            "  環境設置.md\n"
-            "  故障排查.md",
+            "  docs/安裝與環境建置.md\n"
+            "  docs/故障排查與急診室.md\n"
+            "  文件導航.md（先導航）",
             title="[bold red]缺少相依套件[/]",
             border_style="red",
         ))
+        raise typer.Exit(1)
+
+    train_mode = train_mode.strip().lower()
+    if train_mode not in {"default", "mcmc"}:
+        console.print(f"[red]不支援的 train_mode：{train_mode}（只允許 default / mcmc）[/]")
         raise typer.Exit(1)
     
     # ── 檢查點雲驗證報告 ────────────────────────────
@@ -370,6 +467,14 @@ def main(
     if not colmap_p.exists():
         console.print(f"[red]COLMAP 目錄不存在：{colmap_p.resolve()}[/]")
         raise typer.Exit(1)
+    loss_mask_p = None
+    if loss_mask_dir:
+        loss_mask_p = Path(loss_mask_dir)
+        if not loss_mask_p.is_absolute():
+            loss_mask_p = project_root / loss_mask_p
+        if not loss_mask_p.exists():
+            console.print(f"[red]loss mask 目錄不存在：{loss_mask_p.resolve()}[/]")
+            raise typer.Exit(1)
 
     n_imgs = len(list(img_p.glob("*.png"))) + len(list(img_p.glob("*.jpg")))
     console.print(f"[cyan]影格[/]    {img_p}  ({n_imgs} 張)")
@@ -391,45 +496,26 @@ def main(
     elif actual_scale == 0.0:
         console.print("[yellow]scene_scale = 0（自動估計）。若要精確公尺單位，請先跑 scale_calibrate.py[/]")
 
-    # -- Auto-create colmap_scene directory structure --
+    # Build a per-run scene dir so different experiments do not share stale junctions.
     trainer      = project_root / "gsplat_runner" / "simple_trainer.py"
-    scene_dir    = project_root / "data" / "colmap_scene"
+    scene_dir    = out_p / "_colmap_scene"
 
     if not trainer.exists():
         console.print(f"[red]Cannot find {trainer}[/]")
         raise typer.Exit(1)
 
-    # Build colmap_scene: images/ -> imgdir, sparse/0/ -> colmap dir
-    images_link = scene_dir / "images"
-    sparse_link = scene_dir / "sparse" / "0"
-
-    if not images_link.exists() or not sparse_link.exists():
-        console.print("[yellow]Auto-creating colmap_scene directory...[/]")
-        scene_dir.mkdir(parents=True, exist_ok=True)
-        (scene_dir / "sparse").mkdir(parents=True, exist_ok=True)
-
-        img_target = img_p.resolve()
-        sparse_target = colmap_p.resolve()
-
-        if not images_link.exists():
-            try:
-                images_link.symlink_to(img_target, target_is_directory=True)
-            except OSError:
-                subprocess.run(["cmd", "/c", "mklink", "/J", str(images_link), str(img_target)], check=True)
-            console.print(f"  images -> {img_target}")
-
-        if not sparse_link.exists():
-            try:
-                sparse_link.symlink_to(sparse_target, target_is_directory=True)
-            except OSError:
-                subprocess.run(["cmd", "/c", "mklink", "/J", str(sparse_link), str(sparse_target)], check=True)
-            console.print(f"  sparse/0 -> {sparse_target}")
+    img_target = img_p.resolve()
+    sparse_target = colmap_p.resolve()
+    console.print("[yellow]Building isolated colmap scene directory for this run...[/]")
+    _ensure_scene_dir(scene_dir, img_target, sparse_target)
+    console.print(f"  images -> {img_target}")
+    console.print(f"  sparse/0 -> {sparse_target}")
 
     # simple_trainer args
     eval_schedule = _build_eval_schedule(eval_steps, iterations)
 
     base_args = [
-        "default",
+        train_mode,
         "--data-dir",    str(scene_dir),
         "--result-dir",  str(out_p.resolve()),
         "--max-steps",   str(iterations),
@@ -440,9 +526,31 @@ def main(
         "--strategy.refine-stop-iter", str(densify_until),
     ]
 
+    if train_mode == "default":
+        base_args.extend(["--strategy.grow-grad2d", str(grow_grad2d)])
+    elif train_mode == "mcmc":
+        base_args.extend(["--strategy.cap-max", str(cap_max)])
+
     if eval_schedule:
         base_args.append("--eval-steps")
         base_args.extend(str(step) for step in eval_schedule)
+
+    if train_mode == "default" and absgrad:
+        base_args.append("--strategy.absgrad")
+    if antialiased:
+        base_args.append("--antialiased")
+    if random_bkgd:
+        base_args.append("--random-bkgd")
+    if opacity_reg > 0.0:
+        base_args.extend(["--opacity-reg", str(opacity_reg)])
+    if pose_opt:
+        base_args.append("--pose-opt")
+    if app_opt:
+        base_args.append("--app-opt")
+    if disable_video:
+        base_args.append("--disable-video")
+    if loss_mask_p is not None:
+        base_args.extend(["--loss-mask-dir", str(loss_mask_p.resolve())])
     
     # 加入 scene_scale（如果有指定）
     if actual_scale != 0.0:
@@ -455,9 +563,20 @@ def main(
 
     console.print()
     console.print(Panel(
+        f"Preset:      {train_mode}\n"
         f"迭代數:     {iterations:,}\n"
         f"球諧階數:   {sh_degree}\n"
         f"密化截止:   {densify_until:,}\n"
+        f"AbsGrad:    {'ON' if absgrad else 'OFF'}\n"
+        f"grow_grad2d:{grow_grad2d:.4f}\n"
+        f"AA:         {'ON' if antialiased else 'OFF'}\n"
+        f"Rnd Bkgd:   {'ON' if random_bkgd else 'OFF'}\n"
+        f"Cap Max:    {cap_max:,}\n"
+        f"OpacityReg: {opacity_reg:.4f}\n"
+        f"Pose Opt:   {'ON' if pose_opt else 'OFF'}\n"
+        f"App Opt:    {'ON' if app_opt else 'OFF'}\n"
+        f"Video:      {'OFF' if disable_video else 'ON'}\n"
+        f"Loss Mask:  {str(loss_mask_p.resolve()) if loss_mask_p is not None else 'OFF'}\n"
         f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
         + (" ..." if len(eval_schedule) > 5 else "") + "\n"
         f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}\n\n"
@@ -490,6 +609,61 @@ def main(
     console.print("\n[bold]Phase 2 Next:[/]")
     console.print("  -> python -m src.export_ply")
     console.print("  -> python -m src.export_ply_unity --unity")
+
+    latest_stats = find_latest_step_file(out_p, "val_step*.json", "val_step")
+    latest_ckpt = find_latest_step_file(out_p, "ckpt_*_rank0.pt", "ckpt_")
+    metrics: dict[str, float | int | None] = {
+        "psnr": None,
+        "ssim": None,
+        "lpips": None,
+        "num_gs": None,
+    }
+    if latest_stats is not None and latest_stats.exists():
+        try:
+            stats_payload = _read_json_robust(latest_stats)
+            metrics["psnr"] = stats_payload.get("psnr")
+            metrics["ssim"] = stats_payload.get("ssim")
+            metrics["lpips"] = stats_payload.get("lpips")
+            metrics["num_gs"] = stats_payload.get("num_GS", stats_payload.get("num_gs"))
+        except Exception:
+            pass
+
+    outputs_root = infer_outputs_root(project_root, out_p)
+    contract_paths = write_stage_contract(
+        project_root=project_root,
+        run_root=outputs_root,
+        stage="train_complete",
+        status="completed",
+        artifacts={
+            "pointcloud_report": validation_report_path,
+            "colmap_dir": colmap_p,
+            "result_dir": out_p,
+            "stats_json": latest_stats,
+            "checkpoint": latest_ckpt,
+        },
+        metrics=metrics,
+        params={
+            "train_mode": train_mode,
+            "imgdir": str(img_p.resolve()),
+            "iterations": iterations,
+            "sh_degree": sh_degree,
+            "densify_until": densify_until,
+            "eval_steps": eval_steps,
+            "data_factor": data_factor,
+            "absgrad": absgrad,
+            "grow_grad2d": grow_grad2d,
+            "antialiased": antialiased,
+            "random_bkgd": random_bkgd,
+            "cap_max": cap_max,
+            "opacity_reg": opacity_reg,
+            "pose_opt": pose_opt,
+            "app_opt": app_opt,
+            "loss_mask_dir": str(loss_mask_p.resolve()) if loss_mask_p is not None else "",
+        },
+        summary=f"3DGS {train_mode} training complete",
+    )
+    console.print(f"[green]Agent contract 已導出[/] {contract_paths['local_contract']}")
+    console.print(f"[green]Agent event 已導出[/] {contract_paths['event_file']}")
 
 
 if __name__ == "__main__":

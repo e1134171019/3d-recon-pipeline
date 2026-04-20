@@ -407,11 +407,13 @@ class Dataset:
         split: str = "train",
         patch_size: Optional[int] = None,
         load_depths: bool = False,
+        loss_mask_dir: Optional[str] = None,
     ):
         self.parser = parser
         self.split = split
         self.patch_size = patch_size
         self.load_depths = load_depths
+        self.loss_mask_dir = loss_mask_dir
         indices = np.arange(len(self.parser.image_names))
         if split == "train":
             self.indices = indices[indices % self.parser.test_every != 0]
@@ -424,6 +426,7 @@ class Dataset:
     def __getitem__(self, item: int) -> Dict[str, Any]:
         index = self.indices[item]
         image = imageio.imread(self.parser.image_paths[index])[..., :3]
+        image_name = self.parser.image_names[index]
         camera_id = self.parser.camera_ids[index]
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
         params = self.parser.params_dict[camera_id]
@@ -454,14 +457,44 @@ class Dataset:
             "camtoworld": torch.from_numpy(camtoworlds).float(),
             "image": torch.from_numpy(image).float(),
             "image_id": item,  # the index of the image in the dataset
+            "parser_index": index,
+            "image_name": image_name,
         }
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
 
+        if self.loss_mask_dir:
+            stem = os.path.splitext(image_name)[0]
+            loss_mask_path = os.path.join(self.loss_mask_dir, f"{stem}.png")
+            if os.path.exists(loss_mask_path):
+                # Convention: non-zero pixels mark excluded/background area.
+                loss_mask = imageio.imread(loss_mask_path)
+                if loss_mask.ndim == 3:
+                    loss_mask = loss_mask[..., 0]
+                loss_mask = (loss_mask == 0)
+
+                if len(params) > 0:
+                    mapx, mapy = (
+                        self.parser.mapx_dict[camera_id],
+                        self.parser.mapy_dict[camera_id],
+                    )
+                    loss_mask = cv2.remap(
+                        loss_mask.astype(np.uint8),
+                        mapx,
+                        mapy,
+                        cv2.INTER_NEAREST,
+                    ).astype(bool)
+                    x, y, w, h = self.parser.roi_undist_dict[camera_id]
+                    loss_mask = loss_mask[y : y + h, x : x + w]
+
+                if self.patch_size is not None:
+                    loss_mask = loss_mask[y : y + self.patch_size, x : x + self.patch_size]
+
+                data["loss_mask"] = torch.from_numpy(loss_mask).bool()
+
         if self.load_depths:
             # projected points to image plane to get depths
             worldtocams = np.linalg.inv(camtoworlds)
-            image_name = self.parser.image_names[index]
             point_indices = self.parser.point_indices[image_name]
             points_world = self.parser.points[point_indices]
             points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T

@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "D:/agent_test"
+		}
+	],
+	"settings": {
+		"powershell.cwd": "place_v2"
+	}
+}

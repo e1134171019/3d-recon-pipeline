@@ -30,6 +30,7 @@ from datetime import datetime
 import time
 import sqlite3
 import typer
+from src.utils.agent_contracts import write_stage_contract
 
 app = typer.Typer(help="Phase 1A: COLMAP SfM 重建")
 
@@ -40,8 +41,14 @@ DEFAULT_SFM_PARAMS = {
     "max_image_size": 1600,
     "max_features": 8192,
     "seq_overlap": 10,
+    "loop_detection": True,
+    "mapper_type": "incremental",
+    "sift_peak_threshold": 0.006666666666666667,
+    "sift_edge_threshold": 10,
     "colmap_bin": None,
+    "glomap_bin": None,
     "resume": False,
+    "min_points3d": 50000,
 }
 
 def run(cmd: list[str]) -> None:
@@ -67,6 +74,31 @@ def find_colmap(colmap_bin: str | None) -> str:
             "例如：--colmap-bin \"C:/tools/colmap/bin/colmap.exe\""
         )
     return found
+
+
+def find_glomap(glomap_bin: str | None) -> str:
+    """Resolve path to glomap executable (from arg, installers, or PATH)."""
+    if glomap_bin:
+        if Path(glomap_bin).exists():
+            return glomap_bin
+        raise SystemExit(f"指定的 GLOMAP 不存在：{glomap_bin}")
+
+    local_candidates = [
+        Path("installers") / "glomap-1.2.0" / "bin" / "glomap.exe",
+        Path("glomap") / "bin" / "glomap.exe",
+    ]
+    for candidate in local_candidates:
+        if candidate.exists():
+            return str(candidate.resolve())
+
+    found = shutil.which("glomap")
+    if found:
+        return found
+
+    raise SystemExit(
+        "找不到 GLOMAP：請先安裝官方 Windows binary，或使用 --glomap-bin 指定 glomap.exe。\n"
+        "例如：--glomap-bin \"C:/3d-recon-pipeline/installers/glomap-1.2.0/bin/glomap.exe\""
+    )
 
 
 def _load_sfm_params(params_json: str) -> tuple[dict, dict]:
@@ -150,11 +182,21 @@ def _find_best_sparse_model(sparse_root: Path) -> Path | None:
     for child in sorted(sparse_root.iterdir()):
         if not child.is_dir():
             continue
-        required = [child / "cameras.bin", child / "images.bin", child / "points3D.bin"]
-        if not all(path.exists() and path.stat().st_size > 0 for path in required):
+        direct_required = [child / "cameras.bin", child / "images.bin", child / "points3D.bin"]
+        if all(path.exists() and path.stat().st_size > 0 for path in direct_required):
+            stats, _ = _read_sparse_model_stats(child)
+            candidates.append((child, stats))
             continue
-        stats, _ = _read_sparse_model_stats(child)
-        candidates.append((child, stats))
+
+        # GLOMAP Windows binary may create output_path/0/{cameras,images,points3D}.bin.
+        for nested in sorted(child.iterdir()):
+            if not nested.is_dir():
+                continue
+            nested_required = [nested / "cameras.bin", nested / "images.bin", nested / "points3D.bin"]
+            if not all(path.exists() and path.stat().st_size > 0 for path in nested_required):
+                continue
+            stats, _ = _read_sparse_model_stats(nested)
+            candidates.append((nested, stats))
 
     if not candidates:
         return None
@@ -497,7 +539,7 @@ def check_matching(db: str) -> dict:
     )
 
 
-def check_reconstruction(sparse_model_dir: str) -> dict:
+def check_reconstruction(sparse_model_dir: str, min_points3d: int = 50000) -> dict:
     """
     驗證重建是否成功（Step 3 檢查）
     
@@ -550,7 +592,6 @@ def check_reconstruction(sparse_model_dir: str) -> dict:
     
     # 3. 驗證重建品質
     min_registered_images = 3   # 實際可用的是註冊影像數，不是相機內參模型數
-    min_points3d = 50000        # 我們設定的目標
     
     if stats["registered_images_count"] < min_registered_images:
         errors.append(
@@ -612,6 +653,44 @@ def export_signals(result3: dict, sparse_model_dir: str, reports_dir: Path) -> N
     report_file.write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
     print(f"[OK] 驗證報告已導出：{report_file.resolve()}")
 
+
+def _run_mapper_step(
+    mapper_type: str,
+    colmap_exe: str,
+    glomap_exe: str | None,
+    db: str,
+    img: Path,
+    work_p: Path,
+) -> None:
+    """Run either COLMAP incremental mapper or standalone GLOMAP."""
+    mapper_type_norm = mapper_type.strip().lower()
+    sparse_root = work_p / "sparse"
+
+    if mapper_type_norm == "incremental":
+        run([
+            colmap_exe, "mapper",
+            "--database_path", db,
+            "--image_path", str(img),
+            "--output_path", str(sparse_root),
+            "--Mapper.ba_local_max_num_iterations", "15",
+            "--Mapper.ba_global_max_num_iterations", "30",
+        ])
+        return
+
+    if mapper_type_norm in {"glomap", "global"}:
+        if not glomap_exe:
+            raise SystemExit("mapper_type=glomap 但未提供可用的 glomap.exe")
+        sparse_root.mkdir(parents=True, exist_ok=True)
+        run([
+            glomap_exe, "mapper",
+            "--database_path", db,
+            "--image_path", str(img),
+            "--output_path", str(sparse_root),
+        ])
+        return
+
+    raise SystemExit(f"不支援的 mapper_type：{mapper_type}")
+
 @app.command()
 def main(
     imgdir: str = "data/frames_1600",
@@ -620,8 +699,14 @@ def main(
     max_image_size: int = 1600,   # 合理平衡（避免特徵過多導致匹配過慢）
     max_features: int = 8192,     # COLMAP 預設值（影片幀足夠）
     seq_overlap: int = 10,        # sequential_matcher 前後比對幀數
+    loop_detection: bool = True,  # 若 vocab_tree 存在才可啟用
+    mapper_type: str = "incremental",  # incremental | glomap
+    sift_peak_threshold: float = 0.006666666666666667,
+    sift_edge_threshold: int = 10,
     colmap_bin: str | None = None,
+    glomap_bin: str | None = None,
     resume: bool = False,         # 斷點續跑：跳過已完成的步驟
+    min_points3d: int = 50000,    # Step 3 驗證門檻；subset gate 可降低
     params_json: str = "",        # 由 agent 產生的 sfm_params.json
 ):
     """
@@ -648,10 +733,22 @@ def main(
             max_features = int(recommended.get("max_features", max_features))
         if seq_overlap == DEFAULT_SFM_PARAMS["seq_overlap"]:
             seq_overlap = int(recommended.get("seq_overlap", seq_overlap))
+        if loop_detection == DEFAULT_SFM_PARAMS["loop_detection"]:
+            loop_detection = bool(recommended.get("loop_detection", loop_detection))
+        if mapper_type == DEFAULT_SFM_PARAMS["mapper_type"]:
+            mapper_type = str(recommended.get("mapper_type", mapper_type))
+        if sift_peak_threshold == DEFAULT_SFM_PARAMS["sift_peak_threshold"]:
+            sift_peak_threshold = float(recommended.get("sift_peak_threshold", sift_peak_threshold))
+        if sift_edge_threshold == DEFAULT_SFM_PARAMS["sift_edge_threshold"]:
+            sift_edge_threshold = int(recommended.get("sift_edge_threshold", sift_edge_threshold))
         if colmap_bin == DEFAULT_SFM_PARAMS["colmap_bin"]:
             colmap_bin = recommended.get("colmap_bin", colmap_bin)
+        if glomap_bin == DEFAULT_SFM_PARAMS["glomap_bin"]:
+            glomap_bin = recommended.get("glomap_bin", glomap_bin)
         if resume == DEFAULT_SFM_PARAMS["resume"]:
             resume = bool(recommended.get("resume", resume))
+        if min_points3d == DEFAULT_SFM_PARAMS["min_points3d"]:
+            min_points3d = int(recommended.get("min_points3d", min_points3d))
     # 統一以 project_root 為基準解析相對路徑（避免 CWD 依賴）
     project_root = Path(__file__).parent.parent
     img = project_root / imgdir if not Path(imgdir).is_absolute() else Path(imgdir)
@@ -672,6 +769,8 @@ def main(
     
     db = str(work_p / "database.db")
     colmap_exe = find_colmap(colmap_bin)
+    mapper_type = mapper_type.strip().lower()
+    glomap_exe = find_glomap(glomap_bin) if mapper_type in {"glomap", "global"} else None
     
     # vocab_tree 用於 sequential_matcher 的 loop detection（閉環檢測）
     vocab_tree = project_root / "colmap" / "vocab_tree_flickr100K_words32K.bin"
@@ -700,6 +799,8 @@ def main(
                 "--FeatureExtraction.use_gpu", gpu_flag,
                 "--SiftExtraction.max_image_size", str(max_image_size),
                 "--SiftExtraction.max_num_features", str(max_features),
+                "--SiftExtraction.peak_threshold", str(sift_peak_threshold),
+                "--SiftExtraction.edge_threshold", str(sift_edge_threshold),
             ])
         
         # ✓ Step 1 檢查：特徵提取驗證（resume 時也要驗證）
@@ -727,7 +828,7 @@ def main(
                 "--FeatureMatching.use_gpu", gpu_flag,
             ]
             # loop detection: 用 vocab_tree 偵測回環（走一圈回到起點時能閉合）
-            if vocab_tree is not None:
+            if loop_detection and vocab_tree is not None:
                 matcher_args += [
                     "--SequentialMatching.loop_detection", "1",
                     "--SequentialMatching.vocab_tree_path", str(vocab_tree),
@@ -752,19 +853,19 @@ def main(
             result2['inlier_ratio'],
             use_gpu
         )
-        print("接下來：Step 3 增量式建圖（Mapper + 稀疏點雲重建）")
+        mapper_label = "GLOMAP 全局式建圖" if mapper_type in {"glomap", "global"} else "增量式建圖"
+        print(f"接下來：Step 3 {mapper_label}（Mapper + 稀疏點雲重建）")
         print(mapper_feasibility)
-        
-        # 3) 建圖 - Bundle Adjustment 用 CPU（COLMAP 版本沒有 cuDSS 支持）
-        run([
-            colmap_exe, "mapper",
-            "--database_path", db,
-            "--image_path", str(img),
-            "--output_path", str(work_p / "sparse"),
-            # BA 迭代限制（加速 CPU 模式下的 Mapper）
-            "--Mapper.ba_local_max_num_iterations", "15",
-            "--Mapper.ba_global_max_num_iterations", "30",
-        ])
+
+        # 3) 建圖
+        _run_mapper_step(
+            mapper_type=mapper_type,
+            colmap_exe=colmap_exe,
+            glomap_exe=glomap_exe,
+            db=db,
+            img=img,
+            work_p=work_p,
+        )
         
         print("\n" + "─"*70)
         print("⏳ Mapper 完成 - 正在驗證重建結果...")
@@ -784,13 +885,14 @@ def main(
                 f"  4) 嘗試調整：\n"
                 f"     - 增加特徵數量：--max_features 24000\n"
                 f"     - 降低解析度：--max_image_size 2000\n"
-                f"     - 確保有足夠重疊角度"
+                f"     - 確保有足夠重疊角度\n"
+                f"  5) 若使用 GLOMAP，請檢查 glomap.exe 與 output_path 是否正常"
             )
         
         # ✓ Step 3 檢查：重建驗證
         if best_sparse.name != "0":
             print(f"[INFO] 自動選擇最佳 sparse model：{best_sparse.resolve()}（不是 sparse/0）")
-        result3 = check_reconstruction(str(best_sparse))
+        result3 = check_reconstruction(str(best_sparse), min_points3d=min_points3d)
         if not result3["pass"]:
             raise SystemExit(
                 "Step 3 重建驗證失敗。可能原因：\n" +
@@ -800,6 +902,41 @@ def main(
         # ── 導出驗證報告供決策層使用 ──────────────────────
         print("\n[*] 正在導出點雲驗證報告...")
         export_signals(result3, str(best_sparse.resolve()), reports_dir)
+        contract_paths = write_stage_contract(
+            project_root=project_root,
+            run_root=outputs_root,
+            stage="sfm_complete",
+            status="completed" if result3["can_proceed_to_3dgs"] else "blocked",
+            artifacts={
+                "pointcloud_report": reports_dir / "pointcloud_validation_report.json",
+                "sparse_dir": best_sparse,
+                "database": Path(db),
+            },
+            metrics={
+                "cameras_count": result3["cameras_count"],
+                "images_count": result3["images_count"],
+                "registered_images_count": result3["registered_images_count"],
+                "points3d_count": result3["points3d_count"],
+                "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
+            },
+            params={
+                "imgdir": str(img.resolve()),
+                "work": str(work_p.resolve()),
+                "mapper_type": mapper_type,
+                "use_gpu": use_gpu,
+                "max_image_size": max_image_size,
+                "max_features": max_features,
+                "seq_overlap": seq_overlap,
+                "loop_detection": loop_detection,
+            },
+            summary=(
+                "SfM reconstruction complete and ready for 3DGS"
+                if result3["can_proceed_to_3dgs"]
+                else "SfM reconstruction complete but blocked by gate"
+            ),
+        )
+        print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
+        print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
         
         # 計算總耗時
         elapsed_seconds = time.time() - start_time
@@ -842,6 +979,7 @@ def main(
             "  2) 影像夾內容是否正常（不是空的、影像可讀）。\n"
             "  3) 若仍失敗，先把 --use-gpu 設為 False 試試（CPU 比較穩）。\n"
             "  4) `colmap help sequential_matcher` 查看你的版本支援哪些參數。\n"
+            "  5) 若 mapper_type=glomap，請確認 `glomap mapper -h` 可正常執行。\n"
         )
         raise SystemExit(msg) from e
 
