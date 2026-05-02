@@ -14,17 +14,11 @@ omit =
     */__pycache__/*
     outputs/*
     scripts/*
-    experimental/*
     gsplat_runner/*
     unity_setup/*
     test_cuda.py
     src/__init__.py
     src/utils/*
-    src/run_experiment_matrix.py
-    src/run_experiment_suite.py
-    src/run_upstream_matrix.py
-    src/run_upstream_suite.py
-    src/run_upstream_supervisor.py
 
 [json]
 pretty_print = True

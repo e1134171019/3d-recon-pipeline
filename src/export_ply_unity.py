@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from src.utils.agent_contracts import infer_outputs_root, write_stage_contract
+from src.utils.agent_contracts import infer_outputs_root, trigger_decision_layer, write_stage_contract
 
 
 # ─── Quaternion helpers (wxyz convention) ────────────────────────────
@@ -311,6 +311,20 @@ def main():
     )
     print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
     print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
+    decision_contract = contract_paths.get("latest_file") or contract_paths["event_file"]
+    decision_result = trigger_decision_layer(
+        project_root=project_root,
+        contract_path=decision_contract,
+    )
+    if decision_result["status"] == "completed":
+        print(f"[OK] Agent decision 已更新：{decision_result.get('decision_path', '')}")
+    elif decision_result["status"] == "warning":
+        print(f"[WARN] Agent decision hook 警告：{decision_result.get('reason', '') or decision_result.get('decision_path', '')}")
+    else:
+        print(
+            f"[WARN] Agent decision hook 失敗：returncode={decision_result.get('returncode')} "
+            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')}"
+        )
 
 
 def _write_ply(means, scales, quats, opacities, sh0, shN, out_path: Path):

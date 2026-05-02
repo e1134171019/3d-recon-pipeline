@@ -168,7 +168,7 @@ def phase0_v2_current_vs_v2():
 def phase0_v2_layers():
     fig, ax = base_ax(title="Phase 0 V2 Layers")
     add_box(ax, 0.10, 0.67, 0.80, 0.18, "Agent Layer\nphase0_params.json / media probe / reports", fc="#fff1d6")
-    add_box(ax, 0.10, 0.40, 0.80, 0.18, "Pipeline Layer\nprobe_media.py / extract_frames_ffmpeg.py / filter_frames_phase0.py / build_frames_1600.py / phase0_runner_v2.py", fc="#eaf5ff")
+    add_box(ax, 0.10, 0.40, 0.80, 0.18, "Pipeline Layer\npreprocess_phase0.py / downscale_frames.py\n(optional future: ffprobe / ffmpeg integrated here)", fc="#eaf5ff")
     add_box(ax, 0.10, 0.13, 0.80, 0.18, "Compute Layer\nffprobe / ffmpeg / NVDEC / OpenCV", fc="#eef8ee")
     add_arrow(ax, 0.50, 0.67, 0.50, 0.58)
     add_arrow(ax, 0.50, 0.40, 0.50, 0.31)

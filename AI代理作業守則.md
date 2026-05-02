@@ -2,6 +2,18 @@
 
 > 這是一份專為 Agent (AI 助手) 設計的上下文注入文件。在每次對話前，必須優先讀取本份文件。
 
+> **共同治理摘要**
+> - 以目前專案結構與正式主線為準，不依單張圖片、單次對話、舊封存文件或舊路徑推斷架構。
+> - 任務開始前先依 [文件導航.md](/C:/3d-recon-pipeline/文件導航.md) 路由，再讀 [專案願景與當前狀態.md](/C:/3d-recon-pipeline/專案願景與當前狀態.md) 的「當前狀態」與任務對應正式文件；需要主線總覽時再讀 [README.md](/C:/3d-recon-pipeline/README.md)。
+> - 正式來源只有 9 份文件（8+1）；舊中文文件與 `docs/experiments/` 不再作為正式決策依據。
+> - 生產層：`C:\3d-recon-pipeline`；決策層：`D:\agent_test`；正式接口只看 `outputs/agent_events/latest_*_complete.json` 與 `outputs/agent_decisions/latest_*_decision.json`。
+> - 長任務必須開可見終端；PowerShell 空格路徑只用 `Start-Process -FilePath` 或 `& '完整路徑'`；coverage 只看正式主線六模組；修改前先列保留 / 刪除 / 歸檔建議。
+
+## 0. Codex CLI / VS Code 終端規則
+- 若要在 VS Code 內使用 Codex CLI，不得用 `Start-Process` 另開外部終端；應使用 VS Code integrated terminal 或 `.vscode/tasks.json` 啟動。
+- 啟動 Codex CLI 前必須固定 UTF-8、`chcp 65001`、Node.js PATH（`C:\Program Files\nodejs;C:\Users\User\AppData\Roaming\npm`）與工作目錄 `C:\3d-recon-pipeline`。
+- 外部可見終端只用於長時間訓練、SfM、Unity batch、ffmpeg 等需要獨立觀察輸出的任務；Codex CLI 互動式 TUI 預設在 VS Code 內建終端執行。
+
 ## 1. 專案主軸與 Agent 的核心職責
 - **專案主軸**：這不僅是一個 3DGS 腳本，而是一套包含「影片抽幀 -> Unity 場景匯出」的**端到端全自動化 A/B 對照管線 (Pipeline)**。
 - **Agent 本身的角色**：**介入地圖建立與訓練決策！** AI 需看懂 A/B 對照結果，產出報告，並在管線各階段 (L0, SfM, 3DGS) 給予下一步的參數與排障建議。
@@ -23,6 +35,9 @@
   - `outputs/agent_decisions/latest_sfm_decision.json`
   - `outputs/agent_decisions/latest_train_decision.json`
   - `outputs/agent_decisions/latest_export_decision.json`
+- **Stage contract 最小 schema**：生產層寫出 `latest_*_complete.json` 前必須通過 `src/utils/agent_contracts.py` 的最小驗證；決策層讀取 contract / JSON history 必須走 `D:\agent_test\src\contract_io.py`，不得再在各檔手寫 encoding fallback 或 JSONL fallback。
+- **必填核心欄位**：`schema_version / timestamp / run_id / run_root / stage / status`；`artifacts / metrics / params` 必須是 object，缺值時只能正規化為 `{}`，不得混入 list 或自然語言段落作為正式 contract。
+- 生產層在 `train_complete` / `export_complete` 寫完 `latest_*` event 後，現在會同步觸發 `D:\agent_test\run_phase0.py --contract ...` 嘗試刷新對應 decision outbox。若 hook 失敗，主流程只記警告，不因決策層異常反向中止。
 - 決策層不得再以舊式固定路徑掃描整個 `outputs/` 當主入口；正式依據是 stage contract。
 - 生產層若要讀回 Gate 結果，只能讀 `outputs/agent_decisions/latest_*_decision.json`，不得直接耦合 `D:\agent_test\outputs\phase0\...`。
 - **保留規則**：
@@ -30,6 +45,172 @@
   - 可清理：`outputs/agent_events/<timestamp>_*.json`、`outputs/agent_decisions/<timestamp>_*.json`
   - 原則：共享 inbox / outbox 只保留 `latest_*` 當正式狀態；完整歷史由 per-run contract 與決策層審計目錄承擔。
   - 清理腳本：`python scripts/cleanup_agent_mailboxes.py --apply`
+
+### 1C. Agent 正式定位與演進原則
+- **Agent 系統的本質是輔助生產層，不是專案主體。** 專案真正持續擴大的對象是生產層能力（地圖建立、Unity 驗證、未來的人行為 / 機器狀態 / DXF 工件狀態），不是 agent 機制本身。
+- **決策層不是自治多 agent 執行器。** 它的正式角色是：根據正式 `state / event / 實驗史` 產生候選、收斂策略、回寫審計與決策結果，協助生產層減少錯誤實驗與重工。
+- **生產層必須可獨立運作。** 即使決策層 hook、validator 或 report 流程失敗，主流程也只能降級為警告與人工判讀，不能反向成為生產層的單點阻塞。
+- **Agent 核心只處理抽象決策流程。** 核心只應承擔 `state / event / candidate / decision / feedback / audit`；不得把 `LPIPS`、`cap_max`、Unity 視覺細節等 map-building 專屬 heuristics 寫死成全域核心規則。
+- **Phase-specific 細節應以 strategy packs 擴充。** 地圖建立、人行為、機器狀態、DXF 等能力未來都應各自擁有策略模組；核心維持穩定，策略可替換與增量成長。
+- **單一 arbiter 負責正式裁決。** 各 strategy module 只能提出候選，不得直接改主線；只有 arbiter 能依正式文件、當前 phase、黑名單與實驗史輸出唯一正式 next step。
+- **外部對話框 AI 的定位是 meta evaluator。** 它不取代 runtime 主控，而是用來審查：agent 是否真的持續優化、是否在收斂、是否又被 phase 細節污染核心。
+
+### 1D. Agent V1 改寫計畫
+- **先定核心 contract，再改程式。** 在任何 agent 重寫前，先固定 5 個抽象物件：`current_state`、`event`、`candidate`、`arbiter_decision`、`outcome_feedback`。沒有統一 schema，不得直接擴寫多 agent。
+- **核心只保留決策流程，不承載地圖建立 heuristics。** 核心只負責讀 state / event、收集 candidates、交給 arbiter、寫 audit / feedback；`LPIPS`、`cap_max`、Unity 霧化等細節只應存在於 strategy pack。
+- **現有地圖建立邏輯視為第一個 strategy pack。** 當前 `sfm/train/export/unity/recovery` 的判斷規則，後續應收斂為 `map_building` pack，而不是繼續直接擴寫進 agent 核心。
+- **arbiter 只輸出唯一正式 next step。** 多個 strategy module 可以並行提出候選，但正式 outbox 只能有單一 arbiter 裁決，不得讓多個 module 直接覆寫 `latest_*_decision.json`。
+- **對話框 AI 只做外部優化審查。** 每輪改寫或策略更新後，應以正式 state / event / decision / feedback 為材料，由外部對話框 AI 檢查系統是否更收斂，而不是把對話框 AI 接成 runtime 主控。
+- **V1 遷移順序固定。**
+  1. 定 schema
+  2. 切核心 / map_building pack 邊界
+  3. 抽出 candidates
+  4. 補 arbiter contract
+  5. 補 outcome feedback
+  6. 最後才調整實際 decision logic
+
+### 1E. CoverageStrategy 與 CI Hard Gate
+- **Coverage 問題分成兩層處理：agent 分析 + CI 阻擋。** `CoverageStrategy` 是決策層中的 strategy module，只負責讀 coverage 報告、diff 與正式主線範圍，提出 coverage 風險候選；真正阻止低覆蓋率變更進主線的是 CI hard gate，不是 agent 自行裁決。
+- **CoverageStrategy 的輸入只看正式主線六模組。** 不得把 `outputs`、`scripts`、`gsplat_runner`、`unity_setup` 混入正式 coverage 分析。
+- **CoverageStrategy 的輸出是 finding / candidate，不是直接改碼。** 它應指出：哪個正式主線檔案新增了未覆蓋分支、return path、exception path，建議補哪類測試；不得自行放寬門檻、修改主線或覆寫正式 decision。
+- **CoverageStrategy 最小版已落地。** 決策層目前已有 `D:\agent_test\agents\quality\coverage_strategy.py`，可讀 coverage.py JSON 並輸出 findings/candidates；它仍不是 CI gate，也不得自動改生產層程式。
+- **CI hard gate 負責把品質閥門制度化。** 正式主線應以 branch coverage、diff coverage 或等效檢查作為 required status check；未達門檻的變更不得進主線。
+- **arbiter 只收斂 coverage 候選，不取代 CI。** arbiter 可以依 `CoverageStrategy` 建議決定「先補測試再繼續」或「暫停升格主線」，但最終 merge 保護仍由 CI status checks 承擔。
+- **外部對話框 AI 的 coverage 角色仍是 meta evaluator。** 它用來審查：coverage 規則是否真的讓正式主線更穩，是否只是追數字灌水，是否有把不該納入的檔案混進正式 coverage。
+
+### 1F. Agent V1 五個核心 Schema 草案
+- **Schema 設計原則：核心欄位 generic、phase 細節外掛。** 核心 schema 只定義決策流程一定需要的欄位；像 `LPIPS`、`cap_max`、Unity 霧化、DXF 幾何約束等 domain 細節，必須放在對應 strategy pack 的 `metrics / evidence / params` 內，不得回滲成全域核心必填欄位。
+- **`current_state`**：描述決策當下唯一正式狀態。最小欄位包含：
+  - `state_id`
+  - `phase`
+  - `active_pack`
+  - `current_best`
+  - `next_focus`
+  - `allowed_actions`
+  - `blocked_actions`
+  - `blacklist`
+  - `source_docs`
+  - `updated_at`
+- **`event`**：描述生產層剛完成的事實。最小欄位包含：
+  - `event_id`
+  - `run_id`
+  - `stage`
+  - `pack`
+  - `status`
+  - `run_root`
+  - `artifacts`
+  - `metrics`
+  - `evidence`
+  - `timestamp`
+  - `source_contract`
+- **`candidate`**：描述單一 strategy module 提出的候選策略。最小欄位包含：
+  - `candidate_id`
+  - `source_module`
+  - `scope`
+  - `proposal_type`
+  - `title`
+  - `rationale`
+  - `params`
+  - `expected_gain`
+  - `expected_risk`
+  - `estimated_cost`
+  - `blocked_by`
+  - `evidence`
+  - `confidence`
+- **`arbiter_decision`**：描述單一 arbiter 對候選池的正式裁決。最小欄位包含：
+  - `decision_id`
+  - `state_ref`
+  - `event_ref`
+  - `selected_candidate_id`
+  - `rejected_candidate_ids`
+  - `decision`
+  - `reason`
+  - `next_action`
+  - `can_proceed`
+  - `requires_human_review`
+  - `written_at`
+- **`outcome_feedback`**：描述已執行決策的回饋結果，供後續收斂。最小欄位包含：
+  - `feedback_id`
+  - `decision_ref`
+  - `run_id`
+  - `outcome_status`
+  - `observed_metrics`
+  - `observed_artifacts`
+  - `drift_vs_expectation`
+  - `lessons`
+  - `update_targets`
+  - `recorded_at`
+- **正式約束**：
+  - 所有 schema 都必須可序列化成穩定 JSON，不依賴自然語言段落當唯一真相。
+  - `latest_*_decision.json` 只允許寫入 `arbiter_decision` 類輸出，不得混入候選池或原始觀察。
+  - `outcome_feedback` 不得直接覆寫 `current_state`；狀態更新必須經過正式文件與 arbiter / meta evaluator 審查。
+  - 決策層核心輸出必須經 `D:\agent_test\src\contract_io.py` 驗證後才可寫檔；適用範圍包含 `candidate_pool.json`、`current_state.json`、`arbiter_decision.json`、`outcome_feedback.json` 與 `latest_*_decision.json`。
+  - `candidate_pool.json` 必須維持 `candidate_count == len(candidates)`；`arbiter_decision.json` 必須包含 `written_at` 與單一正式裁決；production-facing `latest_*_decision.json` 不得混入候選池或自然語言長報告。
+
+### 1G. `agent_test` 現況對照：核心 / map_building pack 切分
+- **目前可直接視為核心層的檔案**
+  - `D:\agent_test\run_phase0.py`
+    - 只負責 entrypoint、CLI 參數、呼叫 runner。
+  - `D:\agent_test\src\phase0_runner.py`
+    - 只負責 latest contract 掃描、watch mode、啟動 coordinator。
+  - `D:\agent_test\src\coordinator.py` 的下列責任
+    - contract 讀取
+    - shared decision 寫回
+    - audit / report 路徑整理
+    - event bus
+  - `D:\agent_test\src\candidate_pool.py`
+    - 把 stage proposal log 統一整理成 `candidate_pool.json`。
+  - `D:\agent_test\src\arbiter.py`
+    - 根據 `current_state.json + candidate_pool.json` 產出單一 `arbiter_decision.json`。
+  - `D:\agent_test\src\current_state.py`
+    - 把 contract stage、report 建議與 candidate 摘要整理成 `current_state.json`。
+  - `D:\agent_test\src\shared_decision_mapper.py`
+    - 把 `arbiter_decision + report state` 映射成生產層相容的 `latest_*_decision.json` payload。
+  - `D:\agent_test\src\outcome_feedback.py`
+    - 把 arbiter decision、current state、report 與 artifacts 整理成 `outcome_feedback.json`。
+- **目前應下沉為 `map_building` strategy pack 的檔案**
+  - `agents/phase0/pointcloud_validator.py`
+  - `agents/phase0/map_validator.py`
+  - `agents/phase0/production_param_gate.py`
+  - `agents/phase0/recovery_advisor.py` 與 `agents/phase0/phase_reporter.py` 已於 2026-05-01 經 ablation 驗證後移除；停用後 train/export 的正式 decision、next_action 與 selected candidate 不變。
+  - `agents/phase0/unity_param_gate.py` 與 `agents/phase0/unity_importer.py` 已於 2026-05-01 第二輪 ablation 驗證後移除；停用後 latest sfm/train/export 的正式 decision / next_action / selected candidate / dominant layer 無必要改善，且生產層未讀取 decision-layer 的 `unity_export_params.json` 或 `import_summary.json` 作正式接口。
+  - 第二輪 ablation 報告：`C:\tmp\agent_stage_ablation\stage_ablation_report.json`。
+  - 已修正：coordinator 會在 pack 未寫出 `phase0_report.json` 時，依 `pack_result`、`validation_report` 與 `decision_log` 生成正式 `phase0_report.json`，再交給 `current_state / arbiter / shared decision` 使用。
+  - 驗證：2026-05-01 replay latest train/export 後，train = `hold_export` + selected `VAL-001` + dominant `parameter`；export = `hold_phase_close` + selected `PPG-001` + dominant `parameter`。
+  - 已整理：`ArtifactResolver` 統一 contract artifact alias / fallback；`Phase0ReportGenerator` 統一 `phase0_report` 生成規則。兩者仍留在 `coordinator.py` 內，不新增核心檔，避免 6-core 膨脹。
+  - 已整理：`ProblemLayerAnalyzer` 統一 `problem_layer` 單筆推斷與 candidate aggregation；`candidate_pool.py` 負責單一規則來源，`current_state.py` 只消費聚合結果。
+- **現況與 V1 schema 的對照**
+  - `event`
+    - 已存在：由生產層 `latest_*_complete.json` 與 contract 提供。
+    - 問題：pack 名稱與證據欄位尚未統一。
+  - `current_state`
+    - 已初步一級化：`src/current_state.py` 會把 contract stage、report 建議與 candidate 摘要寫成 `current_state.json`。
+    - 仍有缺口：目前仍是 phase0 / map-building 專用摘要，尚未成為 pack-agnostic 的正式全域 state。
+  - `candidate`
+    - 已初步抽出：`src/candidate_pool.py` 會把各 stage `proposal` 正規化並寫成 `candidate_pool.json`。
+    - 仍有缺口：欄位已統一為最小 schema，但 pack 間 `params / evidence / cost` 還沒有更細的 domain 分層。
+  - `arbiter_decision`
+    - 已初步抽出：`src/arbiter.py` 會根據 `current_state.json + candidate_pool.json` 產出單一 `arbiter_decision.json`。
+    - 仍有缺口：目前 arbiter 仍使用 phase0 stage 規則，不是完全 generic 的 pack-agnostic 裁決器。
+  - `outcome_feedback`
+    - 已結構化：`src/outcome_feedback.py` 會把決策結果、觀察指標、artifacts、drift、lessons 與 preliminary outcome label 寫成 `outcome_feedback.json`。
+    - 已形成最小學習閉環：每輪 decision 會同步產生 `learning_curve.json`，並由 `candidate_pool.py` 讀取歷史 `effectiveness_rate / accepted_rate` 影響下一輪 `rank_score`。
+- **當前最明顯的混層點**
+  - `coordinator.py` 已不再承擔 phase-specific stages，且 shared decision payload 已抽到 `shared_decision_mapper.py`；目前仍保留 shared outbox 寫檔責任，但已更接近純 orchestration kernel。
+  - `map_validator.py` 帶有 map-building 專屬指標與自適應閾值，不能升成全域核心。
+- **V1 切分目標**
+  - 核心保留：entrypoint、contract intake、candidate pool 收集、單一 arbiter、decision outbox、feedback 寫回。
+  - `map_building` pack 保留：pointcloud / train quality / param gates / unity export。
+  - support-only report / recovery stage 不再預設保留；若不改變正式 decision，就應刪除或合併到現有核心輸出。
+  - `current_state.py` 與 `outcome_feedback.py` 已補上最小可用 state / feedback / learning curve 物件；下一步是補人工 outcome label 入口，讓學習曲線能判斷 agent 何時可從 meta-evaluator 降為 observer。
+
+### 1H. Agent 學習曲線與對話框 AI 退出條件
+- **學習曲線不是模型訓練曲線，而是決策品質曲線。** 目前 `learning_curve.json` 追蹤每輪 decision 的候選來源、problem layer、是否需人工審查、是否重複錯誤、是否浪費 run，以及估計 token 成本。
+- **未標籤的 hold decision 不計入 recommendation success。** `can_proceed=false` 的決策預設 `decision_useful=null`，必須由後續人工或實驗結果補標，避免把「暫停」誤當成功或失敗。
+- **candidate ranking 只使用已累積的正式 feedback。** 若某 source module 已有 outcome history，`candidate_pool.py` 會以 `effectiveness_rate` 優先，其次才以 `accepted_rate` 影響 `rank_score`。
+- **對話框 AI 的退出不是關閉，而是降級。** 當最近窗口滿足：足夠決策數、recommendation success rate ≥ 0.70、human override rate < 0.20、repeat error rate < 0.10、critical bad release = 0，才建議由 meta-evaluator 降為 observer-only。
+- **目前狀態仍是 keep_meta_evaluator。** 2026-05-01 replay latest train/export 後，`learning_curve.json` 可正常產生，但兩筆皆為 `held_for_review` 且尚未人工標籤，因此仍不能宣稱 agent 已可自主優化。
+- **人工標籤必須走 CLI，不手改 JSON。** 若要標記某輪決策是否有用，使用 `D:\agent_test\run_phase0.py --label-feedback <outcome_feedback.json> --decision-useful true|false ...`。CLI 會更新 `outcome_feedback.json` 並重算同一 stage 目錄下的 `learning_curve.json`。
 
 ## 2. 嚴密的 Gate 0~3 快速驗證協定
 為了不浪費算力，Agent 評估任何新增實驗（如 L0 洗幀）時，**必須絕對遵守**以下閥門標準，未過關者直接停止，嚴禁盲目推薦 full training：
@@ -89,12 +270,49 @@
 - 不把以下內容混入正式 coverage：
   - `outputs/**`
   - `scripts/**`
-  - `experimental/**`
   - `gsplat_runner/**`
-  - `src/run_*.py`
   - `scripts/test_cuda.py`
   - `unity_setup/**`
 - 正式設定以 `.coveragerc` 為準。
+
+## 4C. 六主程式模組化規格
+- **模組化範圍：六個正式主程式一起規劃，逐支落地。** 六主程式仍是 `src/` 的正式邊界，不因重構新增一批零散入口檔。
+- **共同骨架固定為：** `Config -> Paths -> Validate -> BuildCommand/Plan -> Run -> CollectMetrics -> WriteContract`。
+- **`main()` 只做 orchestration。** `main()` 應讀取 CLI 參數、呼叫 helper、處理頂層錯誤與輸出最終狀態；不得長期承擔參數合併、路徑推導、命令組裝、metrics 解析與 contract 寫出細節。
+- **同型 wrapper 規則：**
+  - `preprocess_phase0.py`：Config / Paths / frame plan / filter metrics / report。
+  - `downscale_frames.py`：Config / Paths / resize plan / execution summary。
+  - `sfm_colmap.py`：Config / Paths / feature-match-map command / validation report / `sfm_complete` contract。
+  - `train_3dgs.py`：Config / Paths / trainer args / train metrics / `train_complete` contract。
+  - `export_ply.py`：Config / Paths / checkpoint resolve / export command / artifact summary。
+  - `export_ply_unity.py`：Config / Paths / reconstruction / Unity transform / `export_complete` contract。
+- **第一階段只做檔案內模組化。** 在六主程式穩定前，不新增 `src/train_config.py`、`src/sfm_config.py` 之類新主線檔；若未來真的需要共用 helper，必須先確認不會破壞六主程式 coverage 口徑。
+- **重構驗證門檻：** 每改一支主程式都必須跑 `pytest` 與 `.coveragerc` coverage；CLI 行為、agent contract schema、`latest_*` event / decision interface 不得變更。
+
+### 2026-04-27 生產層 coverage baseline
+- 驗證對象：`C:\3d-recon-pipeline` 產品主線六模組，不包含 `D:\agent_test`。
+- 驗證命令：使用唯一 coverage DB，例如 `$env:COVERAGE_FILE='outputs\logs\.coverage_product_YYYYMMDD_HHMM'; python -m coverage run --rcfile=.coveragerc -m pytest -q tests --tb=short -p no:cacheprovider`，再執行 `coverage report -m` 與 `coverage json`。不要重用被鎖住的 `.coverage_product_current`。
+- 驗證結果：`80 passed` + `2 subtests passed`，總覆蓋率 `92%`（1135 covered / 1230 statements）。
+- 報告位置：`outputs/logs/coverage_product_report.json`。
+- 模組覆蓋率：`export_ply.py` 99%、`export_ply_unity.py` 99%、`train_3dgs.py` 98%、`downscale_frames.py` 91%、`sfm_colmap.py` 88%、`preprocess_phase0.py` 81%。
+- 本輪改進：補 `sfm_colmap.py` 的 agent params、main 成功路徑、Step 1/2/3 gate 失敗、Mapper 無輸出、COLMAP subprocess failure、COLMAP/GLOMAP resolver、mapper branch 與 sparse stats fallback 測試，使 `sfm_colmap.py` 由 44% 提升至 88%；補 `train_3dgs.py` 的 params-json、MCMC/default command、scale/mask、stats metrics、decision hook、dependency/input failure 與 subprocess failure 測試，使 `train_3dgs.py` 由 68% 提升至 98%；補 `export_ply_unity.py` 的 CLI/main、params-json、denormalize、Unity 座標轉換、filter 與 decision hook 測試，使 `export_ply_unity.py` 由 41% 提升至 99%；補 `preprocess_phase0.py` 的 video path、CLAHE、blur reject、video-open fail 與 fake video 抽幀/過濾統計，使 `preprocess_phase0.py` 由 32% 提升至 81%；補 `export_ply.py` 的 missing checkpoint、gsplat export 成功與 ImportError fallback 測試，使 `export_ply.py` 由 65% 提升至 99%。
+- 下一步優先順序：生產層正式 coverage 已越過 90% 目標；後續只針對實際風險補 `preprocess_phase0.py` 的 CLI 收尾區或 `sfm_colmap.py` 的少數診斷分支，不為追數字新增低價值測試。
+- 注意：`D:\agent_test` 需要獨立 coverage 設定與 fixture，不得用本 baseline 代表決策層覆蓋率。
+
+### 2026-04-26 決策層 coverage checkpoint
+- 驗證對象：`D:\agent_test` 決策層主線，不包含 `archive/`、`outputs/`、`docs/`、`tests/`。
+- 驗證結果：`30 passed`，總覆蓋率 `94%`。
+- 報告位置：`D:\agent_test\outputs\coverage\coverage_agent_report.json`。
+- 已覆蓋重點：`coordinator.py`、`map_building_pack.py`、`phase0_runner.py`、`contract_io.py`、`coverage_strategy.py`、核心 reducers 與主要 phase0 / quality strategy module 的 return / exception / contract fixture 路徑。
+- CoverageStrategy 實測：讀取 `outputs/logs/coverage_product_report.json` 後輸出 `D:\agent_test\outputs\coverage\coverage_strategy_report.json`，目前結果為 `pass`，共 `0` 個 findings、`0` 個 candidates。
+- 後續規則：決策層新增 strategy module 時，必須同步補測試，維持 `90%+`，避免為了修 runtime 錯誤而產生未覆蓋的新分支。
+
+### 2026-04-26 跨層文件同步規則
+- `D:\agent_test` 只記錄決策層自己的真相：runtime contract、core / strategy pack 邊界、coverage checkpoint、執行 SOP 與審計路徑。
+- `C:\3d-recon-pipeline` 的正式 9 份文件只記錄生產層主線、全域治理、實驗歷史、L0/Gate 協定、備用方案與故障排查。
+- 若修改決策層 runtime 行為，至少同步更新 `D:\agent_test\.instructions.md`；若同時影響生產層 hook、共享 inbox/outbox 或正式 coverage 口徑，必須同步更新本文件。
+- 若只是外部圖片或對話提出的重構建議，先列入候選與風險分析，不得直接升格為正式架構。
+- 若重構涉及 `preprocess_phase0.py`、`sfm_colmap.py`、`src/utils/agent_contracts.py` 或 decision contract schema，必須先補測試與 fixture，再考慮改主線。
 
 ## 5. 全域連動修改守則 (Global Update Rule)
 當要求修改核心邏輯、更換框架或推進新的開發階段時，Agent **不准直接開始寫程式**。Agent 必須先執行以下動作：

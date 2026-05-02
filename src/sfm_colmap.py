@@ -2,11 +2,20 @@
 # -*- coding: utf-8 -*-
 import sys
 import io
-sys.stdout = io.TextIOWrapper(
-    sys.stdout.buffer, 
-    encoding='utf-8', 
-    errors='replace'
-)
+
+
+def _ensure_utf8_stdout() -> None:
+    """Keep CLI output UTF-8 without breaking pytest's capture streams."""
+    if "pytest" in sys.modules or not hasattr(sys.stdout, "buffer"):
+        return
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+_ensure_utf8_stdout()
 
 """
 Phase 1A - SfM 重建（唯一入口）
@@ -23,6 +32,7 @@ Phase 1A - SfM 重建（唯一入口）
   python -m src.sfm_colmap --resume
 """
 from pathlib import Path
+from dataclasses import dataclass
 import subprocess
 import shutil
 import json
@@ -50,6 +60,37 @@ DEFAULT_SFM_PARAMS = {
     "resume": False,
     "min_points3d": 50000,
 }
+
+
+@dataclass(frozen=True)
+class SfmConfig:
+    imgdir: str
+    work: str
+    use_gpu: bool
+    max_image_size: int
+    max_features: int
+    seq_overlap: int
+    loop_detection: bool
+    mapper_type: str
+    sift_peak_threshold: float
+    sift_edge_threshold: int
+    colmap_bin: str | None
+    glomap_bin: str | None
+    resume: bool
+    min_points3d: int
+    params_json: str = ""
+
+
+@dataclass(frozen=True)
+class SfmPaths:
+    project_root: Path
+    img: Path
+    work_p: Path
+    outputs_root: Path
+    sfm_models_dir: Path
+    reports_dir: Path
+    db: str
+    vocab_tree: Path | None
 
 def run(cmd: list[str]) -> None:
     """Run a command and echo it; raise if non-zero."""
@@ -118,6 +159,186 @@ def _load_sfm_params(params_json: str) -> tuple[dict, dict]:
     if not isinstance(recommended, dict):
         raise SystemExit(f"params json 格式不正確：{params_path}")
     return plan, recommended
+
+
+def _apply_recommended_sfm_params(config: SfmConfig, recommended: dict) -> SfmConfig:
+    updates: dict[str, object] = {}
+    for key, default_value in DEFAULT_SFM_PARAMS.items():
+        current_value = getattr(config, key)
+        if current_value == default_value and key in recommended:
+            updates[key] = recommended[key]
+    if not updates:
+        return config
+    return SfmConfig(
+        imgdir=str(updates.get("imgdir", config.imgdir)),
+        work=str(updates.get("work", config.work)),
+        use_gpu=bool(updates.get("use_gpu", config.use_gpu)),
+        max_image_size=int(updates.get("max_image_size", config.max_image_size)),
+        max_features=int(updates.get("max_features", config.max_features)),
+        seq_overlap=int(updates.get("seq_overlap", config.seq_overlap)),
+        loop_detection=bool(updates.get("loop_detection", config.loop_detection)),
+        mapper_type=str(updates.get("mapper_type", config.mapper_type)),
+        sift_peak_threshold=float(updates.get("sift_peak_threshold", config.sift_peak_threshold)),
+        sift_edge_threshold=int(updates.get("sift_edge_threshold", config.sift_edge_threshold)),
+        colmap_bin=updates.get("colmap_bin", config.colmap_bin),
+        glomap_bin=updates.get("glomap_bin", config.glomap_bin),
+        resume=bool(updates.get("resume", config.resume)),
+        min_points3d=int(updates.get("min_points3d", config.min_points3d)),
+        params_json=config.params_json,
+    )
+
+
+def _resolve_sfm_config(
+    *,
+    imgdir: str,
+    work: str,
+    use_gpu: bool,
+    max_image_size: int,
+    max_features: int,
+    seq_overlap: int,
+    loop_detection: bool,
+    mapper_type: str,
+    sift_peak_threshold: float,
+    sift_edge_threshold: int,
+    colmap_bin: str | None,
+    glomap_bin: str | None,
+    resume: bool,
+    min_points3d: int,
+    params_json: str,
+) -> SfmConfig:
+    config = SfmConfig(
+        imgdir=imgdir,
+        work=work,
+        use_gpu=use_gpu,
+        max_image_size=max_image_size,
+        max_features=max_features,
+        seq_overlap=seq_overlap,
+        loop_detection=loop_detection,
+        mapper_type=mapper_type,
+        sift_peak_threshold=sift_peak_threshold,
+        sift_edge_threshold=sift_edge_threshold,
+        colmap_bin=colmap_bin,
+        glomap_bin=glomap_bin,
+        resume=resume,
+        min_points3d=min_points3d,
+        params_json=params_json,
+    )
+    if not params_json:
+        return config
+
+    plan, recommended = _load_sfm_params(params_json)
+    print(
+        f"[AGENT] 套用 SfM 設定: {Path(params_json).resolve()} "
+        f"(profile={plan.get('profile_name', 'unknown')})"
+    )
+    return _apply_recommended_sfm_params(config, recommended)
+
+
+def _resolve_sfm_paths(config: SfmConfig) -> SfmPaths:
+    project_root = Path(__file__).parent.parent
+    img = project_root / config.imgdir if not Path(config.imgdir).is_absolute() else Path(config.imgdir)
+    work_p = project_root / config.work if not Path(config.work).is_absolute() else Path(config.work)
+
+    if not img.exists() or not any(img.iterdir()):
+        raise SystemExit(f"影像夾為空：{img.resolve()}，請先抽影格/降尺寸")
+
+    (work_p / "sparse").mkdir(parents=True, exist_ok=True)
+    outputs_root = _infer_outputs_root(project_root, work_p)
+    outputs_root.mkdir(parents=True, exist_ok=True)
+    sfm_models_dir = outputs_root / "SfM_models"
+    reports_dir = outputs_root / "reports"
+    sfm_models_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    vocab_tree = project_root / "colmap" / "vocab_tree_flickr100K_words32K.bin"
+    if not vocab_tree.exists():
+        print("[WARN] 找不到 vocab_tree 文件，將停用 loop detection")
+        print(f"       預期位置：{vocab_tree.resolve()}")
+        print("       下載：https://demuc.de/colmap/")
+        vocab_tree = None
+
+    return SfmPaths(
+        project_root=project_root,
+        img=img,
+        work_p=work_p,
+        outputs_root=outputs_root,
+        sfm_models_dir=sfm_models_dir,
+        reports_dir=reports_dir,
+        db=str(work_p / "database.db"),
+        vocab_tree=vocab_tree,
+    )
+
+
+def _build_feature_extractor_args(config: SfmConfig, paths: SfmPaths, colmap_exe: str) -> list[str]:
+    return [
+        colmap_exe, "feature_extractor",
+        "--database_path", paths.db,
+        "--image_path", str(paths.img),
+        "--ImageReader.single_camera", "1",
+        "--FeatureExtraction.use_gpu", "1" if config.use_gpu else "0",
+        "--SiftExtraction.max_image_size", str(config.max_image_size),
+        "--SiftExtraction.max_num_features", str(config.max_features),
+        "--SiftExtraction.peak_threshold", str(config.sift_peak_threshold),
+        "--SiftExtraction.edge_threshold", str(config.sift_edge_threshold),
+    ]
+
+
+def _build_sequential_matcher_args(config: SfmConfig, paths: SfmPaths, colmap_exe: str) -> list[str]:
+    args = [
+        colmap_exe, "sequential_matcher",
+        "--database_path", paths.db,
+        "--SequentialMatching.overlap", str(config.seq_overlap),
+        "--FeatureMatching.use_gpu", "1" if config.use_gpu else "0",
+    ]
+    if config.loop_detection and paths.vocab_tree is not None:
+        args += [
+            "--SequentialMatching.loop_detection", "1",
+            "--SequentialMatching.vocab_tree_path", str(paths.vocab_tree),
+        ]
+    return args
+
+
+def _write_sfm_complete_contract(
+    *,
+    paths: SfmPaths,
+    config: SfmConfig,
+    mapper_type: str,
+    best_sparse: Path,
+    result3: dict,
+) -> dict[str, str]:
+    return write_stage_contract(
+        project_root=paths.project_root,
+        run_root=paths.outputs_root,
+        stage="sfm_complete",
+        status="completed" if result3["can_proceed_to_3dgs"] else "blocked",
+        artifacts={
+            "pointcloud_report": paths.reports_dir / "pointcloud_validation_report.json",
+            "sparse_dir": best_sparse,
+            "database": Path(paths.db),
+        },
+        metrics={
+            "cameras_count": result3["cameras_count"],
+            "images_count": result3["images_count"],
+            "registered_images_count": result3["registered_images_count"],
+            "points3d_count": result3["points3d_count"],
+            "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
+        },
+        params={
+            "imgdir": str(paths.img.resolve()),
+            "work": str(paths.work_p.resolve()),
+            "mapper_type": mapper_type,
+            "use_gpu": config.use_gpu,
+            "max_image_size": config.max_image_size,
+            "max_features": config.max_features,
+            "seq_overlap": config.seq_overlap,
+            "loop_detection": config.loop_detection,
+        },
+        summary=(
+            "SfM reconstruction complete and ready for 3DGS"
+            if result3["can_proceed_to_3dgs"]
+            else "SfM reconstruction complete but blocked by gate"
+        ),
+    )
 
 
 def _infer_outputs_root(project_root: Path, work_p: Path) -> Path:
@@ -715,96 +936,40 @@ def main(
       2) sequential_matcher（影片相鄰幀匹配 + loop detection）
       3) mapper
     """
-    if params_json:
-        plan, recommended = _load_sfm_params(params_json)
-        print(
-            f"[AGENT] 套用 SfM 設定: {Path(params_json).resolve()} "
-            f"(profile={plan.get('profile_name', 'unknown')})"
-        )
-        if imgdir == DEFAULT_SFM_PARAMS["imgdir"]:
-            imgdir = str(recommended.get("imgdir", imgdir))
-        if work == DEFAULT_SFM_PARAMS["work"]:
-            work = str(recommended.get("work", work))
-        if use_gpu == DEFAULT_SFM_PARAMS["use_gpu"]:
-            use_gpu = bool(recommended.get("use_gpu", use_gpu))
-        if max_image_size == DEFAULT_SFM_PARAMS["max_image_size"]:
-            max_image_size = int(recommended.get("max_image_size", max_image_size))
-        if max_features == DEFAULT_SFM_PARAMS["max_features"]:
-            max_features = int(recommended.get("max_features", max_features))
-        if seq_overlap == DEFAULT_SFM_PARAMS["seq_overlap"]:
-            seq_overlap = int(recommended.get("seq_overlap", seq_overlap))
-        if loop_detection == DEFAULT_SFM_PARAMS["loop_detection"]:
-            loop_detection = bool(recommended.get("loop_detection", loop_detection))
-        if mapper_type == DEFAULT_SFM_PARAMS["mapper_type"]:
-            mapper_type = str(recommended.get("mapper_type", mapper_type))
-        if sift_peak_threshold == DEFAULT_SFM_PARAMS["sift_peak_threshold"]:
-            sift_peak_threshold = float(recommended.get("sift_peak_threshold", sift_peak_threshold))
-        if sift_edge_threshold == DEFAULT_SFM_PARAMS["sift_edge_threshold"]:
-            sift_edge_threshold = int(recommended.get("sift_edge_threshold", sift_edge_threshold))
-        if colmap_bin == DEFAULT_SFM_PARAMS["colmap_bin"]:
-            colmap_bin = recommended.get("colmap_bin", colmap_bin)
-        if glomap_bin == DEFAULT_SFM_PARAMS["glomap_bin"]:
-            glomap_bin = recommended.get("glomap_bin", glomap_bin)
-        if resume == DEFAULT_SFM_PARAMS["resume"]:
-            resume = bool(recommended.get("resume", resume))
-        if min_points3d == DEFAULT_SFM_PARAMS["min_points3d"]:
-            min_points3d = int(recommended.get("min_points3d", min_points3d))
-    # 統一以 project_root 為基準解析相對路徑（避免 CWD 依賴）
-    project_root = Path(__file__).parent.parent
-    img = project_root / imgdir if not Path(imgdir).is_absolute() else Path(imgdir)
-    work_p = project_root / work if not Path(work).is_absolute() else Path(work)
-
-    if not img.exists() or not any(img.iterdir()):
-        raise SystemExit(f"影像夾為空：{img.resolve()}，請先抽影格/降尺寸")
-
-    (work_p / "sparse").mkdir(parents=True, exist_ok=True)
-    
-    # 统一输出目录结构
-    outputs_root = _infer_outputs_root(project_root, work_p)
-    outputs_root.mkdir(parents=True, exist_ok=True)
-    sfm_models_dir = outputs_root / "SfM_models"
-    reports_dir = outputs_root / "reports"
-    sfm_models_dir.mkdir(parents=True, exist_ok=True)
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    
-    db = str(work_p / "database.db")
-    colmap_exe = find_colmap(colmap_bin)
-    mapper_type = mapper_type.strip().lower()
-    glomap_exe = find_glomap(glomap_bin) if mapper_type in {"glomap", "global"} else None
-    
-    # vocab_tree 用於 sequential_matcher 的 loop detection（閉環檢測）
-    vocab_tree = project_root / "colmap" / "vocab_tree_flickr100K_words32K.bin"
-    if not vocab_tree.exists():
-        print("[WARN] 找不到 vocab_tree 文件，將停用 loop detection")
-        print(f"       預期位置：{vocab_tree.resolve()}")
-        print(f"       下載：https://demuc.de/colmap/")
-        vocab_tree = None  # loop detection 不是必須的
-    
-    # 統一 GPU 標志（供 feature_extractor 和 sequential_matcher 共用）
-    gpu_flag = "1" if use_gpu else "0"
+    config = _resolve_sfm_config(
+        imgdir=imgdir,
+        work=work,
+        use_gpu=use_gpu,
+        max_image_size=max_image_size,
+        max_features=max_features,
+        seq_overlap=seq_overlap,
+        loop_detection=loop_detection,
+        mapper_type=mapper_type,
+        sift_peak_threshold=sift_peak_threshold,
+        sift_edge_threshold=sift_edge_threshold,
+        colmap_bin=colmap_bin,
+        glomap_bin=glomap_bin,
+        resume=resume,
+        min_points3d=min_points3d,
+        params_json=params_json,
+    )
+    paths = _resolve_sfm_paths(config)
+    colmap_exe = find_colmap(config.colmap_bin)
+    mapper_type = config.mapper_type.strip().lower()
+    glomap_exe = find_glomap(config.glomap_bin) if mapper_type in {"glomap", "global"} else None
 
     try:
         # ⏱️ 開始時間戳
         start_time = time.time()
         
         # 1) 特徵提取
-        if resume and Path(db).exists() and Path(db).stat().st_size > 1024:
+        if config.resume and Path(paths.db).exists() and Path(paths.db).stat().st_size > 1024:
             print("[RESUME] database.db 已存在，跳過特徵提取")
         else:
-            run([
-                colmap_exe, "feature_extractor",
-                "--database_path", db,
-                "--image_path", str(img),
-                "--ImageReader.single_camera", "1",
-                "--FeatureExtraction.use_gpu", gpu_flag,
-                "--SiftExtraction.max_image_size", str(max_image_size),
-                "--SiftExtraction.max_num_features", str(max_features),
-                "--SiftExtraction.peak_threshold", str(sift_peak_threshold),
-                "--SiftExtraction.edge_threshold", str(sift_edge_threshold),
-            ])
+            run(_build_feature_extractor_args(config, paths, colmap_exe))
         
         # ✓ Step 1 檢查：特徵提取驗證（resume 時也要驗證）
-        result1 = check_features(db)
+        result1 = check_features(paths.db)
         if not result1["pass"]:
             raise SystemExit(
                 "Step 1 特徵提取驗證失敗。請檢查：\n"
@@ -814,29 +979,21 @@ def main(
             )
         
         # Step 2 時間提示（保守估計，非精確預測）
-        matcher_estimate = _get_matcher_time_estimate(use_gpu=use_gpu)
+        matcher_estimate = _get_matcher_time_estimate(use_gpu=config.use_gpu)
         print("接下來：Step 2 匹配驗證（Sequential Matcher + 相鄰幀匹配）\n")
         print(f"估計時間：{matcher_estimate}\n")
 
         # 2) Sequential 匹配（影片幀專用：只比對相鄰幀 + loop detection 閉環檢測）
-        if not (resume and Path(db).exists() and Path(db).stat().st_size > 20 * 1024 * 1024):
+        if not (
+            config.resume
+            and Path(paths.db).exists()
+            and Path(paths.db).stat().st_size > 20 * 1024 * 1024
+        ):
             # 只在未 resume 或 db 未包含匹配時才執行
-            matcher_args = [
-                colmap_exe, "sequential_matcher",
-                "--database_path", db,
-                "--SequentialMatching.overlap", str(seq_overlap),
-                "--FeatureMatching.use_gpu", gpu_flag,
-            ]
-            # loop detection: 用 vocab_tree 偵測回環（走一圈回到起點時能閉合）
-            if loop_detection and vocab_tree is not None:
-                matcher_args += [
-                    "--SequentialMatching.loop_detection", "1",
-                    "--SequentialMatching.vocab_tree_path", str(vocab_tree),
-                ]
-            run(matcher_args)
+            run(_build_sequential_matcher_args(config, paths, colmap_exe))
         
         # ✓ Step 2 檢查：匹配品質驗證（內點率關鍵⭐⭐⭐，resume 時也要驗證）
-        result2 = check_matching(db)
+        result2 = check_matching(paths.db)
         if not result2["pass"]:
             raise SystemExit(
                 "Step 2 匹配驗證失敗。問題分析：\n"
@@ -851,7 +1008,7 @@ def main(
         mapper_feasibility = _assess_mapper_feasibility(
             result1['cameras_count'],
             result2['inlier_ratio'],
-            use_gpu
+            config.use_gpu
         )
         mapper_label = "GLOMAP 全局式建圖" if mapper_type in {"glomap", "global"} else "增量式建圖"
         print(f"接下來：Step 3 {mapper_label}（Mapper + 稀疏點雲重建）")
@@ -862,9 +1019,9 @@ def main(
             mapper_type=mapper_type,
             colmap_exe=colmap_exe,
             glomap_exe=glomap_exe,
-            db=db,
-            img=img,
-            work_p=work_p,
+            db=paths.db,
+            img=paths.img,
+            work_p=paths.work_p,
         )
         
         print("\n" + "─"*70)
@@ -872,15 +1029,15 @@ def main(
         print("─"*70 + "\n")
         
         # 🔍 診斷：Mapper 是否真的成功生成了 sparse/0
-        sparse_root = work_p / "sparse"
+        sparse_root = paths.work_p / "sparse"
         best_sparse = _find_best_sparse_model(sparse_root)
         if best_sparse is None:
             raise SystemExit(
                 f"❌ COLMAP Mapper 失敗診斷\n\n"
                 f"預期輸出目錄不存在：{sparse_root.resolve()}\n\n"
                 f"檢查清單：\n"
-                f"  1) 檢查 {work_p / 'sparse'} 是否存在\n"
-                f"  2) 運行：ls {work_p / 'sparse'}/\n"
+                f"  1) 檢查 {paths.work_p / 'sparse'} 是否存在\n"
+                f"  2) 運行：ls {paths.work_p / 'sparse'}/\n"
                 f"  3) 如果為空，Mapper 初始化失敗（匹配品質或參數問題）\n"
                 f"  4) 嘗試調整：\n"
                 f"     - 增加特徵數量：--max_features 24000\n"
@@ -892,7 +1049,7 @@ def main(
         # ✓ Step 3 檢查：重建驗證
         if best_sparse.name != "0":
             print(f"[INFO] 自動選擇最佳 sparse model：{best_sparse.resolve()}（不是 sparse/0）")
-        result3 = check_reconstruction(str(best_sparse), min_points3d=min_points3d)
+        result3 = check_reconstruction(str(best_sparse), min_points3d=config.min_points3d)
         if not result3["pass"]:
             raise SystemExit(
                 "Step 3 重建驗證失敗。可能原因：\n" +
@@ -901,39 +1058,13 @@ def main(
         
         # ── 導出驗證報告供決策層使用 ──────────────────────
         print("\n[*] 正在導出點雲驗證報告...")
-        export_signals(result3, str(best_sparse.resolve()), reports_dir)
-        contract_paths = write_stage_contract(
-            project_root=project_root,
-            run_root=outputs_root,
-            stage="sfm_complete",
-            status="completed" if result3["can_proceed_to_3dgs"] else "blocked",
-            artifacts={
-                "pointcloud_report": reports_dir / "pointcloud_validation_report.json",
-                "sparse_dir": best_sparse,
-                "database": Path(db),
-            },
-            metrics={
-                "cameras_count": result3["cameras_count"],
-                "images_count": result3["images_count"],
-                "registered_images_count": result3["registered_images_count"],
-                "points3d_count": result3["points3d_count"],
-                "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
-            },
-            params={
-                "imgdir": str(img.resolve()),
-                "work": str(work_p.resolve()),
-                "mapper_type": mapper_type,
-                "use_gpu": use_gpu,
-                "max_image_size": max_image_size,
-                "max_features": max_features,
-                "seq_overlap": seq_overlap,
-                "loop_detection": loop_detection,
-            },
-            summary=(
-                "SfM reconstruction complete and ready for 3DGS"
-                if result3["can_proceed_to_3dgs"]
-                else "SfM reconstruction complete but blocked by gate"
-            ),
+        export_signals(result3, str(best_sparse.resolve()), paths.reports_dir)
+        contract_paths = _write_sfm_complete_contract(
+            paths=paths,
+            config=config,
+            mapper_type=mapper_type,
+            best_sparse=best_sparse,
+            result3=result3,
         )
         print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
         print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
@@ -964,7 +1095,7 @@ def main(
         if result3['can_proceed_to_3dgs']:
             print("  ➜ 可以進行 3DGS 訓練 [train_3dgs.py]")
             print(f"     稀疏模型: {best_sparse.resolve()}")
-            print(f"     驗證報告: {reports_dir / 'pointcloud_validation_report.json'}")
+            print(f"     驗證報告: {paths.reports_dir / 'pointcloud_validation_report.json'}")
         else:
             print("  ⚠️  重建失敗，無法進行 3DGS 訓練")
             print("     請檢查數據品質或調整 COLMAP 參數")

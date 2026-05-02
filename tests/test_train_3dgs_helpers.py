@@ -1,5 +1,6 @@
 import json
 import unittest
+import builtins
 from pathlib import Path
 from unittest import mock
 
@@ -8,6 +9,37 @@ from _workspace_temp import workspace_tempdir
 
 
 class Train3DGSHelpersTests(unittest.TestCase):
+    def _main_kwargs(self, **overrides):
+        kwargs = {
+            "train_mode": "default",
+            "imgdir": "data/frames_1600",
+            "colmap": "outputs/SfM_models/sift/sparse/0",
+            "outdir": "outputs/3DGS_models",
+            "iterations": 30000,
+            "sh_degree": 3,
+            "densify_until": 15000,
+            "scene_scale": 0.0,
+            "scale_json": "",
+            "eval_steps": 1000,
+            "data_factor": 1,
+            "absgrad": False,
+            "grow_grad2d": 0.0002,
+            "antialiased": False,
+            "random_bkgd": False,
+            "cap_max": 1_000_000,
+            "mcmc_min_opacity": None,
+            "mcmc_noise_lr": None,
+            "opacity_reg": 0.0,
+            "pose_opt": False,
+            "app_opt": False,
+            "disable_video": False,
+            "loss_mask_dir": "",
+            "validation_report": "",
+            "params_json": "",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
     def test_run_clears_stale_arch_list_before_subprocess(self):
         with mock.patch.dict(train_3dgs.os.environ, {"TORCH_CUDA_ARCH_LIST": "12.0"}, clear=False):
             with mock.patch.object(train_3dgs.subprocess, "run") as mocked_run, mock.patch.object(
@@ -55,6 +87,24 @@ class Train3DGSHelpersTests(unittest.TestCase):
             parsed = train_3dgs._read_json_robust(payload_path)
             self.assertEqual(parsed, {"ok": True})
 
+    def test_check_gsplat_reports_import_status(self):
+        real_import = builtins.__import__
+
+        def fake_import_success(name, *args, **kwargs):
+            if name == "gsplat":
+                return object()
+            return real_import(name, *args, **kwargs)
+
+        def fake_import_failure(name, *args, **kwargs):
+            if name == "gsplat":
+                raise ImportError("missing")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import_success):
+            self.assertTrue(train_3dgs._check_gsplat())
+        with mock.patch("builtins.__import__", side_effect=fake_import_failure):
+            self.assertFalse(train_3dgs._check_gsplat())
+
     def test_resolve_imgdir_falls_back_to_frames_cleaned_for_default_path(self):
         with workspace_tempdir("train_imgdir_") as tmp:
             project_root = tmp
@@ -78,6 +128,11 @@ class Train3DGSHelpersTests(unittest.TestCase):
             resolved = train_3dgs._resolve_imgdir(project_root, str(requested))
             self.assertEqual(resolved, requested)
 
+    def test_resolve_imgdir_returns_missing_requested_without_fallback(self):
+        with workspace_tempdir("train_imgdir_missing_") as tmp:
+            resolved = train_3dgs._resolve_imgdir(tmp, "custom_missing")
+            self.assertEqual(resolved, tmp / "custom_missing")
+
     def test_infer_reports_root_from_colmap_or_3dgs_dirs(self):
         project_root = Path(r"C:\project")
         colmap_root = project_root / "outputs" / "runs" / "run1" / "SfM_models" / "sift"
@@ -89,6 +144,28 @@ class Train3DGSHelpersTests(unittest.TestCase):
         self.assertEqual(
             train_3dgs._infer_reports_root(project_root, str(train_root)),
             project_root / "outputs" / "runs" / "run1" / "reports",
+        )
+        self.assertIsNone(train_3dgs._infer_reports_root(project_root, "data/frames_1600"))
+
+    def test_resolve_validation_report_prefers_explicit_or_default_path(self):
+        project_root = Path(r"C:\project")
+        self.assertEqual(
+            train_3dgs._resolve_validation_report(
+                project_root=project_root,
+                colmap="data/frames",
+                outdir="outputs/custom",
+                validation_report="reports/custom.json",
+            ),
+            project_root / "reports" / "custom.json",
+        )
+        self.assertEqual(
+            train_3dgs._resolve_validation_report(
+                project_root=project_root,
+                colmap="data/frames",
+                outdir="outputs/custom",
+                validation_report="",
+            ),
+            project_root / "outputs" / "reports" / "pointcloud_validation_report.json",
         )
 
     def test_resolve_validation_report_prefers_inferred_reports_dir(self):
@@ -141,11 +218,15 @@ class Train3DGSHelpersTests(unittest.TestCase):
             report.write_text(json.dumps({"can_proceed_to_3dgs": True}), encoding="utf-8")
             self.assertTrue(train_3dgs._check_pointcloud_validation(str(report)))
 
-    def test_resolve_sparse_model_dir_prefers_validation_report_sparse_dir(self):
+    def test_resolve_sparse_model_dir_keeps_explicit_colmap_over_validation_report(self):
         with workspace_tempdir("train_sparse_report_") as tmp:
             project_root = tmp
             report_dir = project_root / "outputs" / "reports"
             report_dir.mkdir(parents=True)
+            requested_sparse = project_root / "outputs" / "SfM_models" / "sift" / "sparse" / "0"
+            requested_sparse.mkdir(parents=True)
+            for name in ("cameras.bin", "images.bin", "points3D.bin"):
+                (requested_sparse / name).write_bytes(b"r" * 32)
             sparse_dir = project_root / "outputs" / "SfM_models" / "sift" / "sparse" / "2"
             sparse_dir.mkdir(parents=True)
             for name in ("cameras.bin", "images.bin", "points3D.bin"):
@@ -163,7 +244,7 @@ class Train3DGSHelpersTests(unittest.TestCase):
                     colmap="outputs/SfM_models/sift/sparse/0",
                     validation_report_path=validation_report,
                 )
-            self.assertEqual(resolved, sparse_dir)
+            self.assertEqual(resolved, requested_sparse)
 
     def test_resolve_sparse_model_dir_picks_largest_available_sparse_child(self):
         with workspace_tempdir("train_sparse_best_") as tmp:
@@ -192,6 +273,46 @@ class Train3DGSHelpersTests(unittest.TestCase):
                 )
             self.assertEqual(resolved, candidate_b)
 
+    def test_resolve_sparse_model_dir_handles_relative_and_bad_report_paths(self):
+        with workspace_tempdir("train_sparse_edges_") as tmp:
+            project_root = tmp
+            sparse_dir = project_root / "outputs" / "SfM_models" / "sift" / "sparse" / "0"
+            sparse_dir.mkdir(parents=True)
+            for name in ("cameras.bin", "images.bin", "points3D.bin"):
+                (sparse_dir / name).write_bytes(b"x" * 32)
+
+            validation_report = project_root / "reports" / "pointcloud_validation_report.json"
+            validation_report.parent.mkdir(parents=True)
+            validation_report.write_text(
+                json.dumps({"sparse_dir": "outputs/SfM_models/sift/sparse/0"}),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(train_3dgs.console, "print"):
+                resolved = train_3dgs._resolve_sparse_model_dir(
+                    project_root=project_root,
+                    colmap="outputs/SfM_models/sift/sparse/1",
+                    validation_report_path=validation_report,
+                )
+            self.assertEqual(resolved, project_root / "outputs" / "SfM_models" / "sift" / "sparse" / "1")
+
+            bad_report = project_root / "reports" / "bad.json"
+            bad_report.write_text("{bad-json", encoding="utf-8")
+            requested = project_root / "outputs" / "SfM_models" / "sift"
+            ignored_file = requested / "sparse" / "not_a_dir"
+            incomplete = requested / "sparse" / "incomplete"
+            ignored_file.parent.mkdir(parents=True, exist_ok=True)
+            ignored_file.write_text("skip", encoding="utf-8")
+            incomplete.mkdir()
+            (incomplete / "cameras.bin").write_bytes(b"x")
+
+            resolved_after_bad_report = train_3dgs._resolve_sparse_model_dir(
+                project_root=project_root,
+                colmap="outputs/SfM_models/sift",
+                validation_report_path=bad_report,
+            )
+            self.assertEqual(resolved_after_bad_report, sparse_dir)
+
     def test_remove_path_deletes_file_and_directory(self):
         file_path = mock.MagicMock()
         file_path.exists.return_value = True
@@ -212,6 +333,38 @@ class Train3DGSHelpersTests(unittest.TestCase):
         file_path.unlink.assert_called_once()
         mocked_rmtree.assert_called_once_with(dir_path)
 
+    def test_remove_path_noops_and_handles_unlink_failure(self):
+        missing = mock.MagicMock()
+        missing.exists.return_value = False
+        missing.is_symlink.return_value = False
+        train_3dgs._remove_path(missing)
+        missing.unlink.assert_not_called()
+
+        symlink_like = mock.MagicMock()
+        symlink_like.exists.return_value = True
+        symlink_like.is_symlink.return_value = True
+        symlink_like.is_file.return_value = False
+        symlink_like.unlink.side_effect = OSError("locked")
+
+        with mock.patch.object(train_3dgs.os, "rmdir") as mocked_rmdir:
+            train_3dgs._remove_path(symlink_like)
+
+        symlink_like.unlink.assert_called_once()
+        mocked_rmdir.assert_called_once_with(symlink_like)
+
+    def test_create_directory_link_falls_back_to_windows_junction(self):
+        link_path = mock.MagicMock()
+        target_path = Path(r"C:\target")
+        link_path.symlink_to.side_effect = OSError("no privilege")
+
+        with mock.patch.object(train_3dgs.subprocess, "run") as mocked_run:
+            train_3dgs._create_directory_link(link_path, target_path)
+
+        mocked_run.assert_called_once_with(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+            check=True,
+        )
+
     def test_ensure_scene_dir_rebuilds_links_from_scratch(self):
         with workspace_tempdir("train_scene_dir_") as tmp:
             scene_dir = tmp / "scene"
@@ -230,6 +383,22 @@ class Train3DGSHelpersTests(unittest.TestCase):
             self.assertEqual(mocked_link.call_count, 2)
             mocked_link.assert_any_call(scene_dir / "images", img_target)
             mocked_link.assert_any_call(scene_dir / "sparse" / "0", sparse_target)
+
+    def test_ensure_scene_dir_removes_existing_scene_dir(self):
+        with workspace_tempdir("train_scene_dir_existing_") as tmp:
+            scene_dir = tmp / "scene"
+            scene_dir.mkdir()
+            img_target = tmp / "images_src"
+            sparse_target = tmp / "sparse_src"
+            img_target.mkdir()
+            sparse_target.mkdir()
+
+            with mock.patch.object(train_3dgs, "_remove_path") as mocked_remove, mock.patch.object(
+                train_3dgs, "_create_directory_link"
+            ):
+                train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target)
+
+            mocked_remove.assert_called_once_with(scene_dir)
 
     def test_resolve_effective_train_config_uses_mcmc_preset_defaults(self):
         effective = train_3dgs._resolve_effective_train_config(
@@ -343,6 +512,283 @@ class Train3DGSHelpersTests(unittest.TestCase):
             self.assertIn("--disable-video", cmd)
             self.assertEqual(cwd, str((Path(train_3dgs.__file__).parent.parent / "gsplat_runner").resolve()))
             mocked_contract.assert_called_once()
+
+    def test_main_applies_params_json_scale_mask_stats_and_completed_decision(self):
+        with workspace_tempdir("train_main_params_") as tmp:
+            project_root = Path(train_3dgs.__file__).parent.parent
+            imgdir = tmp / "images"
+            colmap = tmp / "sparse" / "0"
+            outdir = tmp / "out"
+            loss_mask_dir = tmp / "masks"
+            report = tmp / "pointcloud_validation_report.json"
+            scale_json = tmp / "scale.json"
+            stats_json = tmp / "val_step3000.json"
+            ckpt = tmp / "ckpt_3000_rank0.pt"
+            params_json = tmp / "train_params.json"
+            imgdir.mkdir(parents=True)
+            colmap.mkdir(parents=True)
+            loss_mask_dir.mkdir(parents=True)
+            outdir.mkdir(parents=True)
+            (imgdir / "frame_000001.jpg").write_bytes(b"jpg")
+            report.write_text(json.dumps({"can_proceed_to_3dgs": True}), encoding="utf-8")
+            scale_json.write_text(json.dumps({"scale_m_per_unit": 0.125}), encoding="utf-8")
+            stats_json.write_text(
+                json.dumps({"psnr": 25.0, "ssim": 0.8, "lpips": 0.2, "num_GS": 123}),
+                encoding="utf-8",
+            )
+            ckpt.write_bytes(b"ckpt")
+            params_json.write_text(
+                json.dumps(
+                    {
+                        "train_params": {
+                            "profile_name": "coverage-profile",
+                            "recommended_params": {
+                                "train_mode": "default",
+                                "imgdir": str(imgdir),
+                                "colmap": str(colmap),
+                                "outdir": str(outdir),
+                                "iterations": 3000,
+                                "sh_degree": 2,
+                                "densify_until": 1200,
+                                "scene_scale": 0.0,
+                                "scale_json": str(scale_json),
+                                "eval_steps": 1200,
+                                "data_factor": 2,
+                                "absgrad": True,
+                                "grow_grad2d": 0.0009,
+                                "antialiased": True,
+                                "random_bkgd": True,
+                                "cap_max": 123456,
+                                "mcmc_min_opacity": 0.02,
+                                "mcmc_noise_lr": 1234.0,
+                                "opacity_reg": 0.03,
+                                "pose_opt": True,
+                                "app_opt": True,
+                                "disable_video": True,
+                                "loss_mask_dir": str(loss_mask_dir.relative_to(project_root)),
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(train_3dgs, "_check_gsplat", return_value=True), mock.patch.object(
+                train_3dgs, "_check_pointcloud_validation", return_value=True
+            ), mock.patch.object(train_3dgs, "_ensure_scene_dir"), mock.patch.object(
+                train_3dgs, "_run"
+            ) as mocked_run, mock.patch.object(
+                train_3dgs, "find_latest_step_file", side_effect=[stats_json, ckpt]
+            ), mock.patch.object(
+                train_3dgs, "infer_outputs_root", return_value=tmp / "outputs_root"
+            ), mock.patch.object(
+                train_3dgs,
+                "write_stage_contract",
+                return_value={
+                    "local_contract": tmp / "agent_train_complete.json",
+                    "event_file": tmp / "latest_train_complete.json",
+                    "latest_file": tmp / "latest_train_complete.json",
+                },
+            ) as mocked_contract, mock.patch.object(
+                train_3dgs,
+                "trigger_decision_layer",
+                return_value={"status": "completed", "decision_path": str(tmp / "decision.json")},
+            ), mock.patch.object(train_3dgs.console, "print"):
+                train_3dgs.main(
+                    train_mode="default",
+                    imgdir="data/frames_1600",
+                    colmap="outputs/SfM_models/sift/sparse/0",
+                    outdir="outputs/3DGS_models",
+                    iterations=30000,
+                    sh_degree=3,
+                    densify_until=15000,
+                    scene_scale=0.0,
+                    scale_json="",
+                    eval_steps=1000,
+                    data_factor=1,
+                    absgrad=False,
+                    grow_grad2d=0.0002,
+                    antialiased=False,
+                    random_bkgd=False,
+                    cap_max=1_000_000,
+                    mcmc_min_opacity=None,
+                    mcmc_noise_lr=None,
+                    opacity_reg=0.0,
+                    pose_opt=False,
+                    app_opt=False,
+                    disable_video=False,
+                    loss_mask_dir="",
+                    validation_report=str(report),
+                    params_json=str(params_json),
+                )
+
+            cmd = mocked_run.call_args.args[0]
+            self.assertIn("--strategy.grow-grad2d", cmd)
+            self.assertIn("0.0009", cmd)
+            self.assertIn("--strategy.absgrad", cmd)
+            self.assertIn("--opacity-reg", cmd)
+            self.assertIn("0.03", cmd)
+            self.assertIn("--pose-opt", cmd)
+            self.assertIn("--app-opt", cmd)
+            self.assertIn("--loss-mask-dir", cmd)
+            self.assertIn("--global-scale", cmd)
+            self.assertIn("0.125000", cmd)
+            mocked_contract.assert_called_once()
+            metrics = mocked_contract.call_args.kwargs["metrics"]
+            self.assertEqual(metrics["psnr"], 25.0)
+            self.assertEqual(metrics["num_gs"], 123)
+
+    def test_main_exits_for_dependency_invalid_mode_and_input_failures(self):
+        with mock.patch.object(train_3dgs, "_check_gsplat", return_value=False), mock.patch.object(
+            train_3dgs.console, "print"
+        ):
+            with self.assertRaises(train_3dgs.typer.Exit):
+                train_3dgs.main(**self._main_kwargs())
+
+        with mock.patch.object(train_3dgs, "_check_gsplat", return_value=True), mock.patch.object(
+            train_3dgs.console, "print"
+        ):
+            with self.assertRaises(train_3dgs.typer.Exit):
+                train_3dgs.main(**self._main_kwargs(train_mode="unknown"))
+
+        with workspace_tempdir("train_main_failures_") as tmp, mock.patch.object(
+            train_3dgs, "_check_gsplat", return_value=True
+        ), mock.patch.object(train_3dgs, "_check_pointcloud_validation", return_value=True), mock.patch.object(
+            train_3dgs.console, "print"
+        ):
+            empty_imgdir = tmp / "empty_images"
+            imgdir = tmp / "images"
+            colmap = tmp / "sparse" / "0"
+            outdir = tmp / "out"
+            report = tmp / "pointcloud_validation_report.json"
+            empty_imgdir.mkdir()
+            imgdir.mkdir()
+            colmap.mkdir(parents=True)
+            (imgdir / "frame_000001.jpg").write_bytes(b"jpg")
+            report.write_text(json.dumps({"can_proceed_to_3dgs": True}), encoding="utf-8")
+
+            with self.assertRaises(train_3dgs.typer.Exit):
+                train_3dgs.main(
+                    **self._main_kwargs(
+                        imgdir=str(empty_imgdir),
+                        colmap=str(colmap),
+                        outdir=str(outdir),
+                        validation_report=str(report),
+                    )
+                )
+            with self.assertRaises(train_3dgs.typer.Exit):
+                train_3dgs.main(
+                    **self._main_kwargs(
+                        imgdir=str(imgdir),
+                        colmap=str(tmp / "missing_sparse"),
+                        outdir=str(outdir),
+                        validation_report=str(report),
+                    )
+                )
+            with self.assertRaises(train_3dgs.typer.Exit):
+                train_3dgs.main(
+                    **self._main_kwargs(
+                        imgdir=str(imgdir),
+                        colmap=str(colmap),
+                        outdir=str(outdir),
+                        validation_report=str(report),
+                        loss_mask_dir=str(tmp / "missing_masks"),
+                    )
+                )
+
+    def test_main_exits_for_missing_trainer_and_subprocess_failure(self):
+        with workspace_tempdir("train_main_runtime_failures_") as tmp:
+            project_root = Path(train_3dgs.__file__).parent.parent
+            trainer_path = project_root / "gsplat_runner" / "simple_trainer.py"
+            real_exists = Path.exists
+            imgdir = tmp / "images"
+            colmap = tmp / "sparse" / "0"
+            outdir = tmp / "out"
+            report = tmp / "pointcloud_validation_report.json"
+            imgdir.mkdir()
+            colmap.mkdir(parents=True)
+            (imgdir / "frame_000001.jpg").write_bytes(b"jpg")
+            report.write_text(json.dumps({"can_proceed_to_3dgs": True}), encoding="utf-8")
+
+            def fake_exists(path):
+                if path == trainer_path:
+                    return False
+                return real_exists(path)
+
+            with mock.patch.object(train_3dgs, "_check_gsplat", return_value=True), mock.patch.object(
+                train_3dgs, "_check_pointcloud_validation", return_value=True
+            ), mock.patch.object(train_3dgs.Path, "exists", autospec=True, side_effect=fake_exists), mock.patch.object(
+                train_3dgs.console, "print"
+            ):
+                with self.assertRaises(train_3dgs.typer.Exit):
+                    train_3dgs.main(
+                        **self._main_kwargs(
+                            imgdir=str(imgdir),
+                            colmap=str(colmap),
+                            outdir=str(outdir),
+                            validation_report=str(report),
+                        )
+                    )
+
+            with mock.patch.object(train_3dgs, "_check_gsplat", return_value=True), mock.patch.object(
+                train_3dgs, "_check_pointcloud_validation", return_value=True
+            ), mock.patch.object(train_3dgs, "_ensure_scene_dir"), mock.patch.object(
+                train_3dgs,
+                "_run",
+                side_effect=train_3dgs.subprocess.CalledProcessError(1, ["trainer"]),
+            ), mock.patch.object(train_3dgs.console, "print"):
+                with self.assertRaises(train_3dgs.typer.Exit):
+                    train_3dgs.main(
+                        **self._main_kwargs(
+                            imgdir=str(imgdir),
+                            colmap=str(colmap),
+                            outdir=str(outdir),
+                            validation_report=str(report),
+                        )
+                    )
+
+    def test_main_reports_warning_and_failed_decision_hooks(self):
+        with workspace_tempdir("train_main_decisions_") as tmp:
+            imgdir = tmp / "images"
+            colmap = tmp / "sparse" / "0"
+            outdir = tmp / "out"
+            report = tmp / "pointcloud_validation_report.json"
+            imgdir.mkdir()
+            colmap.mkdir(parents=True)
+            (imgdir / "frame_000001.jpg").write_bytes(b"jpg")
+            report.write_text(json.dumps({"can_proceed_to_3dgs": True}), encoding="utf-8")
+
+            for result in (
+                {"status": "warning", "reason": "pending"},
+                {"status": "failed", "returncode": 2, "stderr": "boom", "stdout": ""},
+            ):
+                with self.subTest(result=result), mock.patch.object(
+                    train_3dgs, "_check_gsplat", return_value=True
+                ), mock.patch.object(train_3dgs, "_check_pointcloud_validation", return_value=True), mock.patch.object(
+                    train_3dgs, "_ensure_scene_dir"
+                ), mock.patch.object(train_3dgs, "_run"), mock.patch.object(
+                    train_3dgs, "find_latest_step_file", side_effect=[None, None]
+                ), mock.patch.object(
+                    train_3dgs, "infer_outputs_root", return_value=tmp / "outputs_root"
+                ), mock.patch.object(
+                    train_3dgs,
+                    "write_stage_contract",
+                    return_value={
+                        "local_contract": tmp / "agent_train_complete.json",
+                        "event_file": tmp / "latest_train_complete.json",
+                    },
+                ), mock.patch.object(
+                    train_3dgs, "trigger_decision_layer", return_value=result
+                ) as mocked_decision, mock.patch.object(train_3dgs.console, "print"):
+                    train_3dgs.main(
+                        **self._main_kwargs(
+                            imgdir=str(imgdir),
+                            colmap=str(colmap),
+                            outdir=str(outdir),
+                            validation_report=str(report),
+                        )
+                    )
+                mocked_decision.assert_called_once()
 
 
 if __name__ == "__main__":

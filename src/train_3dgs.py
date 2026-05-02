@@ -3,11 +3,21 @@
 import sys
 import io
 import os
-sys.stdout = io.TextIOWrapper(
-    sys.stdout.buffer, 
-    encoding='utf-8', 
-    errors='replace'
-)
+from dataclasses import dataclass
+
+
+def _ensure_utf8_stdout() -> None:
+    """Keep CLI output UTF-8 without breaking pytest's capture streams."""
+    if "pytest" in sys.modules or not hasattr(sys.stdout, "buffer"):
+        return
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+_ensure_utf8_stdout()
 
 """
 Phase 1B: 3D Gaussian Splatting Training
@@ -26,12 +36,17 @@ Full params:
       --sh-degree 3
 """
 
-import subprocess, sys, json, shutil
+import subprocess, json, shutil
 from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from src.utils.agent_contracts import find_latest_step_file, infer_outputs_root, write_stage_contract
+from src.utils.agent_contracts import (
+    find_latest_step_file,
+    infer_outputs_root,
+    trigger_decision_layer,
+    write_stage_contract,
+)
 
 app   = typer.Typer(help="Phase 1B: gsplat 3DGS 訓練")
 console = Console()
@@ -69,6 +84,47 @@ MCMC_PRESET_DEFAULTS = {
     "noise_lr": 500000.0,
     "cap_max": 1_000_000,
 }
+
+
+@dataclass
+class TrainConfig:
+    train_mode: str
+    imgdir: str
+    colmap: str
+    outdir: str
+    iterations: int
+    sh_degree: int
+    densify_until: int
+    scene_scale: float
+    scale_json: str
+    eval_steps: int
+    data_factor: int
+    absgrad: bool
+    grow_grad2d: float
+    antialiased: bool
+    random_bkgd: bool
+    cap_max: int
+    mcmc_min_opacity: float | None
+    mcmc_noise_lr: float | None
+    opacity_reg: float
+    pose_opt: bool
+    app_opt: bool
+    disable_video: bool
+    loss_mask_dir: str
+
+
+TRAIN_PARAM_CASTERS = {
+    **dict.fromkeys(("train_mode", "imgdir", "colmap", "outdir", "scale_json", "loss_mask_dir"), str),
+    **dict.fromkeys(("iterations", "sh_degree", "densify_until", "eval_steps", "data_factor", "cap_max"), int),
+    **dict.fromkeys(("scene_scale", "grow_grad2d", "opacity_reg"), float),
+    **dict.fromkeys(("absgrad", "antialiased", "random_bkgd", "pose_opt", "app_opt", "disable_video"), bool),
+}
+
+TRAIN_CONTRACT_PARAM_KEYS = (
+    "train_mode", "iterations", "sh_degree", "densify_until", "eval_steps",
+    "data_factor", "absgrad", "grow_grad2d", "antialiased", "random_bkgd",
+    "cap_max", "opacity_reg", "pose_opt", "app_opt",
+)
 
 def _read_json_robust(path: Path) -> dict:
     encodings = ("utf-8", "utf-8-sig", "cp950", "mbcs")
@@ -236,23 +292,6 @@ def _resolve_sparse_model_dir(
     if not requested.is_absolute():
         requested = project_root / requested
 
-    if validation_report_path.exists():
-        try:
-            report = _read_json_robust(validation_report_path)
-            sparse_dir = report.get("sparse_dir")
-            if sparse_dir:
-                report_path = Path(sparse_dir)
-                if not report_path.is_absolute():
-                    report_path = project_root / report_path
-                if report_path.exists():
-                    if report_path.resolve() != requested.resolve():
-                        console.print(
-                            f"[cyan]依驗證報告改用最佳 sparse model[/] {report_path.resolve()}"
-                        )
-                    return report_path
-        except Exception:
-            pass
-
     if requested.is_dir() and not (requested / "points3D.bin").exists():
         sparse_root = requested / "sparse" if (requested / "sparse").exists() else requested
         candidates = []
@@ -271,6 +310,21 @@ def _resolve_sparse_model_dir(
             chosen = candidates[0][0]
             console.print(f"[cyan]自動挑選 sparse model[/] {chosen.resolve()}")
             return chosen
+
+    if validation_report_path.exists():
+        try:
+            report = _read_json_robust(validation_report_path)
+            sparse_dir = report.get("sparse_dir")
+            if sparse_dir:
+                report_path = Path(sparse_dir)
+                if not report_path.is_absolute():
+                    report_path = project_root / report_path
+                if report_path.exists() and report_path.resolve() != requested.resolve():
+                    console.print(
+                        "[dim]validation_report 指向不同 sparse_dir，但依規則保留 --colmap 作為正式資料底座。[/]"
+                    )
+        except Exception:
+            pass
 
     return requested
 
@@ -339,6 +393,32 @@ def _load_train_params(params_json: str) -> tuple[dict, dict]:
     return plan, recommended
 
 
+def _apply_recommended_train_params(config: TrainConfig, recommended: dict) -> TrainConfig:
+    """Apply agent recommendations only when the matching CLI value is still default."""
+    values = config.__dict__.copy()
+    for key, default_value in DEFAULT_TRAIN_PARAMS.items():
+        if key not in values or values[key] != default_value or key not in recommended:
+            continue
+        value = recommended[key]
+        caster = TRAIN_PARAM_CASTERS.get(key)
+        if caster is not None and value is not None:
+            value = caster(value)
+        values[key] = value
+    return TrainConfig(**values)
+
+
+def _resolve_train_config(config: TrainConfig, params_json: str) -> TrainConfig:
+    if not params_json:
+        return config
+
+    plan, recommended = _load_train_params(params_json)
+    console.print(
+        f"[cyan]套用 agent 訓練設定[/] {Path(params_json).resolve()} "
+        f"(profile={plan.get('profile_name', 'unknown')})"
+    )
+    return _apply_recommended_train_params(config, recommended)
+
+
 def _build_eval_schedule(step_interval: int, max_steps: int) -> list[int]:
     """Convert an interval-style setting to the explicit step list expected by simple_trainer."""
     if step_interval <= 0:
@@ -398,6 +478,236 @@ def _resolve_effective_train_config(
     return effective
 
 
+def _resolve_scene_scale(scale_json: str, scene_scale: float) -> float:
+    actual_scale = scene_scale
+    if scale_json:
+        sj = Path(scale_json)
+        if sj.exists():
+            data = _read_json_robust(sj)
+            actual_scale = data.get("scale_m_per_unit", 0.0)
+            console.print(f"[green]scale_factor = {actual_scale:.6f} m/unit（來自 {sj.name}）[/]")
+        else:
+            console.print(f"[yellow]找不到 {sj}，使用預設 scale[/]")
+    elif actual_scale == 0.0:
+        console.print("[yellow]scene_scale = 0（自動估計）。若要精確公尺單位，請先提供 --scene-scale 或 --scale-json[/]")
+    return actual_scale
+
+
+def _append_probe_only_args(
+    base_args: list[str],
+    config: TrainConfig,
+    *,
+    loss_mask_path: Path | None,
+    actual_scale: float,
+) -> None:
+    if config.random_bkgd:
+        base_args.append("--random-bkgd")
+    if config.opacity_reg > 0.0:
+        base_args.extend(["--opacity-reg", str(config.opacity_reg)])
+    if config.pose_opt:
+        base_args.append("--pose-opt")
+    if config.app_opt:
+        base_args.append("--app-opt")
+    if loss_mask_path is not None:
+        base_args.extend(["--loss-mask-dir", str(loss_mask_path.resolve())])
+    if actual_scale != 0.0:
+        base_args.extend(["--global-scale", f"{actual_scale:.6f}"])
+
+
+def _build_trainer_args(
+    config: TrainConfig,
+    *,
+    scene_dir: Path,
+    out_dir: Path,
+    actual_scale: float,
+    loss_mask_path: Path | None,
+) -> tuple[list[str], list[int], dict]:
+    eval_schedule = _build_eval_schedule(config.eval_steps, config.iterations)
+
+    base_args = [
+        config.train_mode,
+        "--data-dir", str(scene_dir),
+        "--result-dir", str(out_dir.resolve()),
+        "--max-steps", str(config.iterations),
+        "--sh-degree", str(config.sh_degree),
+        "--data-factor", str(config.data_factor),
+        "--disable-viewer",
+        "--init-type", "sfm",
+        "--strategy.refine-stop-iter", str(config.densify_until),
+    ]
+
+    if config.train_mode == "default":
+        base_args.extend(["--strategy.grow-grad2d", str(config.grow_grad2d)])
+    elif config.train_mode == "mcmc":
+        base_args.extend(["--strategy.cap-max", str(config.cap_max)])
+        if config.mcmc_min_opacity is not None:
+            base_args.extend(["--strategy.min-opacity", str(config.mcmc_min_opacity)])
+        if config.mcmc_noise_lr is not None:
+            base_args.extend(["--strategy.noise-lr", str(config.mcmc_noise_lr)])
+
+    if eval_schedule:
+        base_args.append("--eval-steps")
+        base_args.extend(str(step) for step in eval_schedule)
+
+    if config.train_mode == "default" and config.absgrad:
+        base_args.append("--strategy.absgrad")
+    if config.antialiased:
+        base_args.append("--antialiased")
+    if config.disable_video:
+        base_args.append("--disable-video")
+    _append_probe_only_args(
+        base_args,
+        config,
+        loss_mask_path=loss_mask_path,
+        actual_scale=actual_scale,
+    )
+
+    effective_cfg = _resolve_effective_train_config(
+        config.train_mode,
+        absgrad=config.absgrad,
+        grow_grad2d=config.grow_grad2d,
+        antialiased=config.antialiased,
+        random_bkgd=config.random_bkgd,
+        cap_max=config.cap_max,
+        mcmc_min_opacity=config.mcmc_min_opacity,
+        mcmc_noise_lr=config.mcmc_noise_lr,
+        opacity_reg=config.opacity_reg,
+        pose_opt=config.pose_opt,
+        app_opt=config.app_opt,
+    )
+    return base_args, eval_schedule, effective_cfg
+
+
+def _build_probe_summary_lines(effective_cfg: dict) -> list[str]:
+    return [
+        f"Rnd Bkgd:   {'ON' if effective_cfg['random_bkgd'] else 'OFF'}",
+        f"OpacityReg: {effective_cfg['opacity_reg']:.4f}",
+        f"Pose Opt:   {'ON' if effective_cfg['pose_opt'] else 'OFF'}",
+        f"App Opt:    {'ON' if effective_cfg['app_opt'] else 'OFF'}",
+    ]
+
+
+def _build_training_summary_lines(
+    config: TrainConfig,
+    *,
+    effective_cfg: dict,
+    eval_schedule: list[int],
+    loss_mask_path: Path | None,
+    actual_scale: float,
+) -> list[str]:
+    summary_lines = [
+        f"Preset:      {config.train_mode}",
+        f"迭代數:     {config.iterations:,}",
+        f"球諧階數:   {config.sh_degree}",
+        f"密化截止:   {config.densify_until:,}",
+        f"AbsGrad:    {'ON' if effective_cfg['absgrad'] else 'OFF'}",
+        f"grow_grad2d:{effective_cfg['grow_grad2d']:.4f}",
+        f"AA:         {'ON' if effective_cfg['antialiased'] else 'OFF'}",
+        f"Cap Max:    {effective_cfg['cap_max']:,}",
+    ]
+    summary_lines.extend(_build_probe_summary_lines(effective_cfg))
+    if config.train_mode == "mcmc":
+        summary_lines.extend(
+            [
+                f"MCMC min_opa: {effective_cfg['mcmc_min_opacity']:.4f}",
+                f"MCMC noise_lr:{effective_cfg['mcmc_noise_lr']:.0f}",
+                f"MCMC scale_reg:{effective_cfg['mcmc_scale_reg']:.4f}",
+            ]
+        )
+    summary_lines.extend(
+        [
+            f"Video:      {'OFF' if config.disable_video else 'ON'}",
+            f"Loss Mask:  {str(loss_mask_path.resolve()) if loss_mask_path is not None else 'OFF'}",
+            f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
+            + (" ..." if len(eval_schedule) > 5 else ""),
+            f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}",
+            "",
+            "[dim]註：此處顯示的是 trainer 最終生效值，不是 wrapper 預設值。[/]",
+            "[dim]RTX 5070 Ti 預計訓練時間：~60-90 min[/]",
+        ]
+    )
+    return summary_lines
+
+
+def _collect_train_metrics(out_dir: Path) -> tuple[dict, Path | None, Path | None]:
+    latest_stats = find_latest_step_file(out_dir, "val_step*.json", "val_step")
+    latest_ckpt = find_latest_step_file(out_dir, "ckpt_*_rank0.pt", "ckpt_")
+    metrics: dict[str, float | int | None] = {
+        "psnr": None,
+        "ssim": None,
+        "lpips": None,
+        "num_gs": None,
+    }
+    if latest_stats is not None and latest_stats.exists():
+        try:
+            stats_payload = _read_json_robust(latest_stats)
+            metrics["psnr"] = stats_payload.get("psnr")
+            metrics["ssim"] = stats_payload.get("ssim")
+            metrics["lpips"] = stats_payload.get("lpips")
+            metrics["num_gs"] = stats_payload.get("num_GS", stats_payload.get("num_gs"))
+        except Exception:
+            pass
+    return metrics, latest_stats, latest_ckpt
+
+
+def _write_train_complete_contract(
+    *,
+    project_root: Path,
+    outputs_root: Path,
+    config: TrainConfig,
+    img_path: Path,
+    colmap_path: Path,
+    out_path: Path,
+    validation_report_path: Path,
+    loss_mask_path: Path | None,
+    metrics: dict,
+    latest_stats: Path | None,
+    latest_ckpt: Path | None,
+) -> dict:
+    contract_params = {key: getattr(config, key) for key in TRAIN_CONTRACT_PARAM_KEYS}
+    contract_params["imgdir"] = str(img_path.resolve())
+    contract_params["loss_mask_dir"] = str(loss_mask_path.resolve()) if loss_mask_path is not None else ""
+    return write_stage_contract(
+        project_root=project_root,
+        run_root=outputs_root,
+        stage="train_complete",
+        status="completed",
+        artifacts={
+            "pointcloud_report": validation_report_path,
+            "colmap_dir": colmap_path,
+            "result_dir": out_path,
+            "stats_json": latest_stats,
+            "checkpoint": latest_ckpt,
+        },
+        metrics=metrics,
+        params=contract_params,
+        summary=f"3DGS {config.train_mode} training complete",
+    )
+
+
+def _trigger_train_decision(project_root: Path, contract_paths: dict) -> None:
+    console.print(f"[green]Agent contract 已導出[/] {contract_paths['local_contract']}")
+    console.print(f"[green]Agent event 已導出[/] {contract_paths['event_file']}")
+    decision_contract = contract_paths.get("latest_file") or contract_paths["event_file"]
+    decision_result = trigger_decision_layer(
+        project_root=project_root,
+        contract_path=decision_contract,
+    )
+    if decision_result["status"] == "completed":
+        console.print(
+            f"[green]Agent decision 已更新[/] {decision_result.get('decision_path', '')}"
+        )
+    elif decision_result["status"] == "warning":
+        console.print(
+            f"[yellow]Agent decision hook 警告[/] {decision_result.get('reason', '') or decision_result.get('decision_path', '')}"
+        )
+    else:
+        console.print(
+            f"[red]Agent decision hook 失敗[/] returncode={decision_result.get('returncode')} "
+            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')}"
+        )
+
+
 @app.command()
 def main(
     train_mode:   str   = typer.Option("default",              help="trainer preset：default 或 mcmc"),
@@ -407,8 +717,8 @@ def main(
     iterations:   int   = typer.Option(30000,                  help="訓練迭代數（說明書建議 30000）"),
     sh_degree:    int   = typer.Option(3,                      help="球諧函數階數（金屬場景建議 3）"),
     densify_until:int   = typer.Option(15000,                  help="點雲密化截止迭代"),
-    scene_scale:  float = typer.Option(0.0,                    help="scene scale（公尺/unit），0=自動。用 scale_calibrate.py 算出後填入"),
-    scale_json:   str   = typer.Option("",                     help="直接讀 scale_calibrate.py 輸出的 JSON 路徑"),
+    scene_scale:  float = typer.Option(0.0,                    help="scene scale（公尺/unit），0=自動；若已校正尺度可直接填入"),
+    scale_json:   str   = typer.Option("",                     help="直接讀取包含 scale_m_per_unit 的 JSON 路徑"),
     eval_steps:   int   = typer.Option(1000,                   help="每幾步評估一次 PSNR"),
     data_factor:  int   = typer.Option(1,                      help="影像縮放比例（已縮過就設 1）"),
     absgrad:      bool  = typer.Option(False,                  help="使用 absolute gradients 觸發 densification（AbsGS 方向）"),
@@ -428,59 +738,8 @@ def main(
 ):
     # ── 初期化專案路徑（一次定義） ────────────────────
     project_root = Path(__file__).parent.parent
-    
-    if params_json:
-        plan, recommended = _load_train_params(params_json)
-        console.print(
-            f"[cyan]套用 agent 訓練設定[/] {Path(params_json).resolve()} "
-            f"(profile={plan.get('profile_name', 'unknown')})"
-        )
-        if train_mode == DEFAULT_TRAIN_PARAMS["train_mode"]:
-            train_mode = str(recommended.get("train_mode", train_mode))
-        if imgdir == DEFAULT_TRAIN_PARAMS["imgdir"]:
-            imgdir = str(recommended.get("imgdir", imgdir))
-        if colmap == DEFAULT_TRAIN_PARAMS["colmap"]:
-            colmap = str(recommended.get("colmap", colmap))
-        if outdir == DEFAULT_TRAIN_PARAMS["outdir"]:
-            outdir = str(recommended.get("outdir", outdir))
-        if iterations == DEFAULT_TRAIN_PARAMS["iterations"]:
-            iterations = int(recommended.get("iterations", iterations))
-        if sh_degree == DEFAULT_TRAIN_PARAMS["sh_degree"]:
-            sh_degree = int(recommended.get("sh_degree", sh_degree))
-        if densify_until == DEFAULT_TRAIN_PARAMS["densify_until"]:
-            densify_until = int(recommended.get("densify_until", densify_until))
-        if scene_scale == DEFAULT_TRAIN_PARAMS["scene_scale"]:
-            scene_scale = float(recommended.get("scene_scale", scene_scale))
-        if scale_json == DEFAULT_TRAIN_PARAMS["scale_json"]:
-            scale_json = str(recommended.get("scale_json", scale_json))
-        if eval_steps == DEFAULT_TRAIN_PARAMS["eval_steps"]:
-            eval_steps = int(recommended.get("eval_steps", eval_steps))
-        if data_factor == DEFAULT_TRAIN_PARAMS["data_factor"]:
-            data_factor = int(recommended.get("data_factor", data_factor))
-        if absgrad == DEFAULT_TRAIN_PARAMS["absgrad"]:
-            absgrad = bool(recommended.get("absgrad", absgrad))
-        if grow_grad2d == DEFAULT_TRAIN_PARAMS["grow_grad2d"]:
-            grow_grad2d = float(recommended.get("grow_grad2d", grow_grad2d))
-        if antialiased == DEFAULT_TRAIN_PARAMS["antialiased"]:
-            antialiased = bool(recommended.get("antialiased", antialiased))
-        if random_bkgd == DEFAULT_TRAIN_PARAMS["random_bkgd"]:
-            random_bkgd = bool(recommended.get("random_bkgd", random_bkgd))
-        if cap_max == DEFAULT_TRAIN_PARAMS["cap_max"]:
-            cap_max = int(recommended.get("cap_max", cap_max))
-        if mcmc_min_opacity == DEFAULT_TRAIN_PARAMS["mcmc_min_opacity"]:
-            mcmc_min_opacity = recommended.get("mcmc_min_opacity", mcmc_min_opacity)
-        if mcmc_noise_lr == DEFAULT_TRAIN_PARAMS["mcmc_noise_lr"]:
-            mcmc_noise_lr = recommended.get("mcmc_noise_lr", mcmc_noise_lr)
-        if opacity_reg == DEFAULT_TRAIN_PARAMS["opacity_reg"]:
-            opacity_reg = float(recommended.get("opacity_reg", opacity_reg))
-        if pose_opt == DEFAULT_TRAIN_PARAMS["pose_opt"]:
-            pose_opt = bool(recommended.get("pose_opt", pose_opt))
-        if app_opt == DEFAULT_TRAIN_PARAMS["app_opt"]:
-            app_opt = bool(recommended.get("app_opt", app_opt))
-        if disable_video == DEFAULT_TRAIN_PARAMS["disable_video"]:
-            disable_video = bool(recommended.get("disable_video", disable_video))
-        if loss_mask_dir == DEFAULT_TRAIN_PARAMS["loss_mask_dir"]:
-            loss_mask_dir = str(recommended.get("loss_mask_dir", loss_mask_dir))
+    cli_values = locals().copy()
+    config = _resolve_train_config(TrainConfig(**{key: cli_values[key] for key in DEFAULT_TRAIN_PARAMS}), params_json)
 
     # ── 前置檢查 ──────────────────────────────────
     if not _check_gsplat():
@@ -507,23 +766,23 @@ def main(
         ))
         raise typer.Exit(1)
 
-    train_mode = train_mode.strip().lower()
-    if train_mode not in {"default", "mcmc"}:
-        console.print(f"[red]不支援的 train_mode：{train_mode}（只允許 default / mcmc）[/]")
+    config.train_mode = config.train_mode.strip().lower()
+    if config.train_mode not in {"default", "mcmc"}:
+        console.print(f"[red]不支援的 train_mode：{config.train_mode}（只允許 default / mcmc）[/]")
         raise typer.Exit(1)
     
     # ── 檢查點雲驗證報告 ────────────────────────────
     validation_report_path = _resolve_validation_report(
         project_root=project_root,
-        colmap=colmap,
-        outdir=outdir,
+        colmap=config.colmap,
+        outdir=config.outdir,
         validation_report=validation_report,
     )
     _check_pointcloud_validation(str(validation_report_path))
 
-    img_p    = _resolve_imgdir(project_root, imgdir)
-    colmap_p = _resolve_sparse_model_dir(project_root, colmap, validation_report_path)
-    out_p    = project_root / outdir  # 绝对路径：project_root/outputs/3DGS_models
+    img_p    = _resolve_imgdir(project_root, config.imgdir)
+    colmap_p = _resolve_sparse_model_dir(project_root, config.colmap, validation_report_path)
+    out_p    = project_root / config.outdir  # 绝对路径：project_root/outputs/3DGS_models
 
     if not img_p.exists() or not any(img_p.iterdir()):
         console.print(f"[red]影格目錄為空：{img_p.resolve()}[/]")
@@ -532,8 +791,8 @@ def main(
         console.print(f"[red]COLMAP 目錄不存在：{colmap_p.resolve()}[/]")
         raise typer.Exit(1)
     loss_mask_p = None
-    if loss_mask_dir:
-        loss_mask_p = Path(loss_mask_dir)
+    if config.loss_mask_dir:
+        loss_mask_p = Path(config.loss_mask_dir)
         if not loss_mask_p.is_absolute():
             loss_mask_p = project_root / loss_mask_p
         if not loss_mask_p.exists():
@@ -548,17 +807,7 @@ def main(
     out_p.mkdir(parents=True, exist_ok=True)
 
     # ── 讀取 scale（可選）────────────────────────
-    actual_scale = scene_scale
-    if scale_json:
-        sj = Path(scale_json)
-        if sj.exists():
-            data = json.loads(sj.read_text())
-            actual_scale = data.get("scale_m_per_unit", 0.0)
-            console.print(f"[green]scale_factor = {actual_scale:.6f} m/unit（來自 {sj.name}）[/]")
-        else:
-            console.print(f"[yellow]找不到 {sj}，使用預設 scale[/]")
-    elif actual_scale == 0.0:
-        console.print("[yellow]scene_scale = 0（自動估計）。若要精確公尺單位，請先跑 scale_calibrate.py[/]")
+    actual_scale = _resolve_scene_scale(config.scale_json, config.scene_scale)
 
     # Build a per-run scene dir so different experiments do not share stale junctions.
     trainer      = project_root / "gsplat_runner" / "simple_trainer.py"
@@ -575,107 +824,26 @@ def main(
     console.print(f"  images -> {img_target}")
     console.print(f"  sparse/0 -> {sparse_target}")
 
-    # simple_trainer args
-    eval_schedule = _build_eval_schedule(eval_steps, iterations)
-
-    base_args = [
-        train_mode,
-        "--data-dir",    str(scene_dir),
-        "--result-dir",  str(out_p.resolve()),
-        "--max-steps",   str(iterations),
-        "--sh-degree",   str(sh_degree),
-        "--data-factor", str(data_factor),
-        "--disable-viewer",
-        "--init-type",   "sfm",
-        "--strategy.refine-stop-iter", str(densify_until),
-    ]
-
-    if train_mode == "default":
-        base_args.extend(["--strategy.grow-grad2d", str(grow_grad2d)])
-    elif train_mode == "mcmc":
-        base_args.extend(["--strategy.cap-max", str(cap_max)])
-        if mcmc_min_opacity is not None:
-            base_args.extend(["--strategy.min-opacity", str(mcmc_min_opacity)])
-        if mcmc_noise_lr is not None:
-            base_args.extend(["--strategy.noise-lr", str(mcmc_noise_lr)])
-
-    if eval_schedule:
-        base_args.append("--eval-steps")
-        base_args.extend(str(step) for step in eval_schedule)
-
-    if train_mode == "default" and absgrad:
-        base_args.append("--strategy.absgrad")
-    if antialiased:
-        base_args.append("--antialiased")
-    if random_bkgd:
-        base_args.append("--random-bkgd")
-    if opacity_reg > 0.0:
-        base_args.extend(["--opacity-reg", str(opacity_reg)])
-    if pose_opt:
-        base_args.append("--pose-opt")
-    if app_opt:
-        base_args.append("--app-opt")
-    if disable_video:
-        base_args.append("--disable-video")
-    if loss_mask_p is not None:
-        base_args.extend(["--loss-mask-dir", str(loss_mask_p.resolve())])
-    
-    # 加入 scene_scale（如果有指定）
-    if actual_scale != 0.0:
-        base_args.extend(["--global-scale", f"{actual_scale:.6f}"])
+    base_args, eval_schedule, effective_cfg = _build_trainer_args(
+        config,
+        scene_dir=scene_dir,
+        out_dir=out_p,
+        actual_scale=actual_scale,
+        loss_mask_path=loss_mask_p,
+    )
 
     cmd = [sys.executable, str(trainer)] + base_args
     runner_dir = str(trainer.parent)  # cwd = gsplat_runner/
-    effective_cfg = _resolve_effective_train_config(
-        train_mode,
-        absgrad=absgrad,
-        grow_grad2d=grow_grad2d,
-        antialiased=antialiased,
-        random_bkgd=random_bkgd,
-        cap_max=cap_max,
-        mcmc_min_opacity=mcmc_min_opacity,
-        mcmc_noise_lr=mcmc_noise_lr,
-        opacity_reg=opacity_reg,
-        pose_opt=pose_opt,
-        app_opt=app_opt,
-    )
 
     console.print(f"[dim]cwd: {runner_dir}[/]")
 
     console.print()
-    summary_lines = [
-        f"Preset:      {train_mode}",
-        f"迭代數:     {iterations:,}",
-        f"球諧階數:   {sh_degree}",
-        f"密化截止:   {densify_until:,}",
-        f"AbsGrad:    {'ON' if effective_cfg['absgrad'] else 'OFF'}",
-        f"grow_grad2d:{effective_cfg['grow_grad2d']:.4f}",
-        f"AA:         {'ON' if effective_cfg['antialiased'] else 'OFF'}",
-        f"Rnd Bkgd:   {'ON' if effective_cfg['random_bkgd'] else 'OFF'}",
-        f"Cap Max:    {effective_cfg['cap_max']:,}",
-        f"OpacityReg: {effective_cfg['opacity_reg']:.4f}",
-        f"Pose Opt:   {'ON' if effective_cfg['pose_opt'] else 'OFF'}",
-        f"App Opt:    {'ON' if effective_cfg['app_opt'] else 'OFF'}",
-    ]
-    if train_mode == "mcmc":
-        summary_lines.extend(
-            [
-                f"MCMC min_opa: {effective_cfg['mcmc_min_opacity']:.4f}",
-                f"MCMC noise_lr:{effective_cfg['mcmc_noise_lr']:.0f}",
-                f"MCMC scale_reg:{effective_cfg['mcmc_scale_reg']:.4f}",
-            ]
-        )
-    summary_lines.extend(
-        [
-            f"Video:      {'OFF' if disable_video else 'ON'}",
-            f"Loss Mask:  {str(loss_mask_p.resolve()) if loss_mask_p is not None else 'OFF'}",
-            f"評估步點:   {', '.join(str(step) for step in eval_schedule[:5])}"
-            + (" ..." if len(eval_schedule) > 5 else ""),
-            f"Scene scale: {'自動' if actual_scale == 0 else f'{actual_scale:.6f} m/unit'}",
-            "",
-            "[dim]註：此處顯示的是 trainer 最終生效值，不是 wrapper 預設值。[/]",
-            "[dim]RTX 5070 Ti 預計訓練時間：~60-90 min[/]",
-        ]
+    summary_lines = _build_training_summary_lines(
+        config,
+        effective_cfg=effective_cfg,
+        eval_schedule=eval_schedule,
+        loss_mask_path=loss_mask_p,
+        actual_scale=actual_scale,
     )
     console.print(
         Panel(
@@ -710,60 +878,23 @@ def main(
     console.print("  -> python -m src.export_ply")
     console.print("  -> python -m src.export_ply_unity --unity")
 
-    latest_stats = find_latest_step_file(out_p, "val_step*.json", "val_step")
-    latest_ckpt = find_latest_step_file(out_p, "ckpt_*_rank0.pt", "ckpt_")
-    metrics: dict[str, float | int | None] = {
-        "psnr": None,
-        "ssim": None,
-        "lpips": None,
-        "num_gs": None,
-    }
-    if latest_stats is not None and latest_stats.exists():
-        try:
-            stats_payload = _read_json_robust(latest_stats)
-            metrics["psnr"] = stats_payload.get("psnr")
-            metrics["ssim"] = stats_payload.get("ssim")
-            metrics["lpips"] = stats_payload.get("lpips")
-            metrics["num_gs"] = stats_payload.get("num_GS", stats_payload.get("num_gs"))
-        except Exception:
-            pass
+    metrics, latest_stats, latest_ckpt = _collect_train_metrics(out_p)
 
     outputs_root = infer_outputs_root(project_root, out_p)
-    contract_paths = write_stage_contract(
+    contract_paths = _write_train_complete_contract(
         project_root=project_root,
-        run_root=outputs_root,
-        stage="train_complete",
-        status="completed",
-        artifacts={
-            "pointcloud_report": validation_report_path,
-            "colmap_dir": colmap_p,
-            "result_dir": out_p,
-            "stats_json": latest_stats,
-            "checkpoint": latest_ckpt,
-        },
+        outputs_root=outputs_root,
+        config=config,
+        img_path=img_p,
+        colmap_path=colmap_p,
+        out_path=out_p,
+        validation_report_path=validation_report_path,
+        loss_mask_path=loss_mask_p,
         metrics=metrics,
-        params={
-            "train_mode": train_mode,
-            "imgdir": str(img_p.resolve()),
-            "iterations": iterations,
-            "sh_degree": sh_degree,
-            "densify_until": densify_until,
-            "eval_steps": eval_steps,
-            "data_factor": data_factor,
-            "absgrad": absgrad,
-            "grow_grad2d": grow_grad2d,
-            "antialiased": antialiased,
-            "random_bkgd": random_bkgd,
-            "cap_max": cap_max,
-            "opacity_reg": opacity_reg,
-            "pose_opt": pose_opt,
-            "app_opt": app_opt,
-            "loss_mask_dir": str(loss_mask_p.resolve()) if loss_mask_p is not None else "",
-        },
-        summary=f"3DGS {train_mode} training complete",
+        latest_stats=latest_stats,
+        latest_ckpt=latest_ckpt,
     )
-    console.print(f"[green]Agent contract 已導出[/] {contract_paths['local_contract']}")
-    console.print(f"[green]Agent event 已導出[/] {contract_paths['event_file']}")
+    _trigger_train_decision(project_root, contract_paths)
 
 
 if __name__ == "__main__":

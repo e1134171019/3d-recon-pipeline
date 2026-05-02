@@ -7,12 +7,12 @@ import shutil
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TEST_TMP_ROOT = REPO_ROOT / ".tmp_test_workspace"
+TEST_TMP_ROOT = REPO_ROOT / "outputs" / "tmp_tests"
 
 
 @contextmanager
 def workspace_tempdir(prefix: str = "tmp"):
-    """Create a writable temp directory inside the repo workspace.
+    """Create a writable temp directory under the ignored output workspace.
 
     Avoid tempfile.TemporaryDirectory() here. In this Windows environment it
     creates directories that the same Python process cannot write back into.
@@ -24,3 +24,7 @@ def workspace_tempdir(prefix: str = "tmp"):
         yield temp_dir
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            TEST_TMP_ROOT.rmdir()
+        except OSError:
+            pass
