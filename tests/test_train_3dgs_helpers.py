@@ -84,7 +84,7 @@ class Train3DGSHelpersTests(unittest.TestCase):
         with workspace_tempdir("train_json_") as tmp:
             payload_path = tmp / "payload.json"
             payload_path.write_text(json.dumps({"ok": True}), encoding="utf-8-sig")
-            parsed = train_3dgs._read_json_robust(payload_path)
+            parsed = train_3dgs.read_json_robust(payload_path)
             self.assertEqual(parsed, {"ok": True})
 
     def test_check_gsplat_reports_import_status(self):

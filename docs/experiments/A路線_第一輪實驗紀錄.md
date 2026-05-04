@@ -183,3 +183,23 @@
 
 **在不破壞 A_base 穩定性的前提下，是否能透過背景隨機化與更高 grow 門檻改善品質。**
 
+---
+
+## Rerun Summary (2026-05-04 — 2026-05-05)
+
+- Rerun: `A_base_randombg` + `antialiased` — output: `outputs/experiments/a_route_rerun_matrix/A_base_randombg_aa/3DGS_models`
+  - `val_step0999`: PSNR 18.808 / SSIM 0.7039 / LPIPS 0.479
+  - `val_step1999`: PSNR 19.331 / SSIM 0.7200 / LPIPS 0.434
+  - `val_step2999`: PSNR 19.984 / SSIM 0.7429 / LPIPS 0.398
+  - `val_step3999`: PSNR 20.2033 / SSIM 0.7511 / LPIPS 0.37897
+  - file: [val_step3999.json](outputs/experiments/a_route_rerun_matrix/A_base_randombg_aa/3DGS_models/stats/val_step3999.json#L1)
+  - 結論：相較於 `A_base_randombg` 同步驟的指標（PSNR 20.2489 / SSIM 0.7558 / LPIPS 0.3680），本次交叉組合略微落後，但表現持續回升，屬於「值得保留但需更多步驗證」。
+
+- 新啟動（2026-05-05）: `A_base_grow08_randombg` + `antialiased` — output: `outputs/experiments/a_route_rerun_matrix/A_base_grow08_randombg_aa/3DGS_models`
+  - 設定重點：`grow_grad2d=0.0008`、`antialiased=True`、`random_bkgd=True`
+  - 初始狀態：已啟動訓練並等待首輪評估（1000/2000/3000 步）
+  - 路徑：`outputs/experiments/a_route_rerun_matrix/A_base_grow08_randombg_aa/3DGS_models`
+
+下一步：
+- 等待 `A_base_grow08_randombg_aa` 的 1000/2000/3000 步評估落地，然後比較同步驟指標再決定是否繼續跑完整 30k。
+

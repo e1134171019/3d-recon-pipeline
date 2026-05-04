@@ -1,23 +1,12 @@
 # src/train_3dgs.py
 # -*- coding: utf-8 -*-
 import sys
-import io
 import os
 from dataclasses import dataclass
 
+from src.utils import ensure_utf8_stdout, read_json_robust
 
-def _ensure_utf8_stdout() -> None:
-    """Keep CLI output UTF-8 without breaking pytest's capture streams."""
-    if "pytest" in sys.modules or not hasattr(sys.stdout, "buffer"):
-        return
-    sys.stdout = io.TextIOWrapper(
-        sys.stdout.buffer,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-
-_ensure_utf8_stdout()
+ensure_utf8_stdout()
 
 """
 Phase 1B: 3D Gaussian Splatting Training
@@ -126,15 +115,7 @@ TRAIN_CONTRACT_PARAM_KEYS = (
     "cap_max", "opacity_reg", "pose_opt", "app_opt",
 )
 
-def _read_json_robust(path: Path) -> dict:
-    encodings = ("utf-8", "utf-8-sig", "cp950", "mbcs")
-    last_error: Exception | None = None
-    for encoding in encodings:
-        try:
-            return json.loads(path.read_text(encoding=encoding))
-        except Exception as exc:
-            last_error = exc
-    raise last_error if last_error is not None else ValueError(f"無法解析 JSON：{path}")
+
 
 
 def _check_gsplat() -> bool:
@@ -196,7 +177,7 @@ def _check_pointcloud_validation(validation_report_path: str | None = None) -> b
     
     # 讀取報告
     try:
-        report = _read_json_robust(report_p)
+        report = read_json_robust(report_p)
     except Exception as e:
         console.print(
             Panel(
@@ -313,7 +294,7 @@ def _resolve_sparse_model_dir(
 
     if validation_report_path.exists():
         try:
-            report = _read_json_robust(validation_report_path)
+            report = read_json_robust(validation_report_path)
             sparse_dir = report.get("sparse_dir")
             if sparse_dir:
                 report_path = Path(sparse_dir)
@@ -385,7 +366,7 @@ def _load_train_params(params_json: str) -> tuple[dict, dict]:
     if not params_path.exists():
         raise typer.BadParameter(f"找不到 params json：{params_path}")
 
-    payload = _read_json_robust(params_path)
+    payload = read_json_robust(params_path)
     plan = payload.get("train_params", payload)
     recommended = plan.get("recommended_params", {})
     if not isinstance(recommended, dict):
@@ -483,7 +464,7 @@ def _resolve_scene_scale(scale_json: str, scene_scale: float) -> float:
     if scale_json:
         sj = Path(scale_json)
         if sj.exists():
-            data = _read_json_robust(sj)
+            data = read_json_robust(sj)
             actual_scale = data.get("scale_m_per_unit", 0.0)
             console.print(f"[green]scale_factor = {actual_scale:.6f} m/unit（來自 {sj.name}）[/]")
         else:
@@ -493,6 +474,34 @@ def _resolve_scene_scale(scale_json: str, scene_scale: float) -> float:
     return actual_scale
 
 
+def _flag(args: list[str], flag: str, cond: bool) -> None:
+    """Append flag to args if condition is True."""
+    if cond:
+        args.append(flag)
+
+
+def _opt(args: list[str], flag: str, val: object, cond: bool = True) -> None:
+    """Append flag and value to args if condition is True."""
+    if cond:
+        args.extend([flag, str(val)])
+
+
+def _require_dir(path: Path, label: str, must_nonempty: bool = False) -> None:
+    """Validate that a directory exists and optionally has content.
+    
+    Args:
+        path: Directory path to check
+        label: Label for error message
+        must_nonempty: If True, also check that directory is not empty
+        
+    Raises:
+        typer.Exit(1) if validation fails
+    """
+    if not path.exists() or (must_nonempty and not any(path.iterdir())):
+        console.print(f"[red]{label} 不存在或為空：{path.resolve()}[/]")
+        raise typer.Exit(1)
+
+
 def _append_probe_only_args(
     base_args: list[str],
     config: TrainConfig,
@@ -500,18 +509,13 @@ def _append_probe_only_args(
     loss_mask_path: Path | None,
     actual_scale: float,
 ) -> None:
-    if config.random_bkgd:
-        base_args.append("--random-bkgd")
-    if config.opacity_reg > 0.0:
-        base_args.extend(["--opacity-reg", str(config.opacity_reg)])
-    if config.pose_opt:
-        base_args.append("--pose-opt")
-    if config.app_opt:
-        base_args.append("--app-opt")
+    _flag(base_args, "--random-bkgd", config.random_bkgd)
+    _opt(base_args, "--opacity-reg", config.opacity_reg, config.opacity_reg > 0.0)
+    _flag(base_args, "--pose-opt", config.pose_opt)
+    _flag(base_args, "--app-opt", config.app_opt)
     if loss_mask_path is not None:
-        base_args.extend(["--loss-mask-dir", str(loss_mask_path.resolve())])
-    if actual_scale != 0.0:
-        base_args.extend(["--global-scale", f"{actual_scale:.6f}"])
+        _opt(base_args, "--loss-mask-dir", loss_mask_path.resolve())
+    _opt(base_args, "--global-scale", f"{actual_scale:.6f}", actual_scale != 0.0)
 
 
 def _build_trainer_args(
@@ -549,12 +553,9 @@ def _build_trainer_args(
         base_args.append("--eval-steps")
         base_args.extend(str(step) for step in eval_schedule)
 
-    if config.train_mode == "default" and config.absgrad:
-        base_args.append("--strategy.absgrad")
-    if config.antialiased:
-        base_args.append("--antialiased")
-    if config.disable_video:
-        base_args.append("--disable-video")
+    _flag(base_args, "--strategy.absgrad", config.train_mode == "default" and config.absgrad)
+    _flag(base_args, "--antialiased", config.antialiased)
+    _flag(base_args, "--disable-video", config.disable_video)
     _append_probe_only_args(
         base_args,
         config,
@@ -640,7 +641,7 @@ def _collect_train_metrics(out_dir: Path) -> tuple[dict, Path | None, Path | Non
     }
     if latest_stats is not None and latest_stats.exists():
         try:
-            stats_payload = _read_json_robust(latest_stats)
+            stats_payload = read_json_robust(latest_stats)
             metrics["psnr"] = stats_payload.get("psnr")
             metrics["ssim"] = stats_payload.get("ssim")
             metrics["lpips"] = stats_payload.get("lpips")
@@ -784,20 +785,15 @@ def main(
     colmap_p = _resolve_sparse_model_dir(project_root, config.colmap, validation_report_path)
     out_p    = project_root / config.outdir  # 绝对路径：project_root/outputs/3DGS_models
 
-    if not img_p.exists() or not any(img_p.iterdir()):
-        console.print(f"[red]影格目錄為空：{img_p.resolve()}[/]")
-        raise typer.Exit(1)
-    if not colmap_p.exists():
-        console.print(f"[red]COLMAP 目錄不存在：{colmap_p.resolve()}[/]")
-        raise typer.Exit(1)
+    _require_dir(img_p, "影格目錄", must_nonempty=True)
+    _require_dir(colmap_p, "COLMAP 目錄")
+    
     loss_mask_p = None
     if config.loss_mask_dir:
         loss_mask_p = Path(config.loss_mask_dir)
         if not loss_mask_p.is_absolute():
             loss_mask_p = project_root / loss_mask_p
-        if not loss_mask_p.exists():
-            console.print(f"[red]loss mask 目錄不存在：{loss_mask_p.resolve()}[/]")
-            raise typer.Exit(1)
+        _require_dir(loss_mask_p, "Loss mask 目錄")
 
     n_imgs = len(list(img_p.glob("*.png"))) + len(list(img_p.glob("*.jpg")))
     console.print(f"[cyan]影格[/]    {img_p}  ({n_imgs} 張)")
@@ -813,9 +809,7 @@ def main(
     trainer      = project_root / "gsplat_runner" / "simple_trainer.py"
     scene_dir    = out_p / "_colmap_scene"
 
-    if not trainer.exists():
-        console.print(f"[red]Cannot find {trainer}[/]")
-        raise typer.Exit(1)
+    _require_dir(trainer.parent, "Trainer 目錄")
 
     img_target = img_p.resolve()
     sparse_target = colmap_p.resolve()

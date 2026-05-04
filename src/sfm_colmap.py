@@ -1,21 +1,8 @@
 # sfm_colmap.py
 # -*- coding: utf-8 -*-
-import sys
-import io
+from src.utils import ensure_utf8_stdout
 
-
-def _ensure_utf8_stdout() -> None:
-    """Keep CLI output UTF-8 without breaking pytest's capture streams."""
-    if "pytest" in sys.modules or not hasattr(sys.stdout, "buffer"):
-        return
-    sys.stdout = io.TextIOWrapper(
-        sys.stdout.buffer,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-
-_ensure_utf8_stdout()
+ensure_utf8_stdout()
 
 """
 Phase 1A - SfM 重建（唯一入口）
@@ -32,7 +19,7 @@ Phase 1A - SfM 重建（唯一入口）
   python -m src.sfm_colmap --resume
 """
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import subprocess
 import shutil
 import json
@@ -59,6 +46,13 @@ DEFAULT_SFM_PARAMS = {
     "glomap_bin": None,
     "resume": False,
     "min_points3d": 50000,
+}
+
+_SFM_PARAM_TYPES = {
+    **dict.fromkeys(("imgdir", "work", "mapper_type", "colmap_bin", "glomap_bin"), str),
+    **dict.fromkeys(("max_image_size", "max_features", "seq_overlap", "sift_edge_threshold", "min_points3d"), int),
+    **dict.fromkeys(("use_gpu", "loop_detection", "resume"), bool),
+    **dict.fromkeys(("sift_peak_threshold",), float),
 }
 
 
@@ -162,30 +156,16 @@ def _load_sfm_params(params_json: str) -> tuple[dict, dict]:
 
 
 def _apply_recommended_sfm_params(config: SfmConfig, recommended: dict) -> SfmConfig:
+    """Apply agent-recommended params by casting and merging with replace()."""
     updates: dict[str, object] = {}
     for key, default_value in DEFAULT_SFM_PARAMS.items():
         current_value = getattr(config, key)
         if current_value == default_value and key in recommended:
-            updates[key] = recommended[key]
+            caster = _SFM_PARAM_TYPES.get(key, str)
+            updates[key] = caster(recommended[key])
     if not updates:
         return config
-    return SfmConfig(
-        imgdir=str(updates.get("imgdir", config.imgdir)),
-        work=str(updates.get("work", config.work)),
-        use_gpu=bool(updates.get("use_gpu", config.use_gpu)),
-        max_image_size=int(updates.get("max_image_size", config.max_image_size)),
-        max_features=int(updates.get("max_features", config.max_features)),
-        seq_overlap=int(updates.get("seq_overlap", config.seq_overlap)),
-        loop_detection=bool(updates.get("loop_detection", config.loop_detection)),
-        mapper_type=str(updates.get("mapper_type", config.mapper_type)),
-        sift_peak_threshold=float(updates.get("sift_peak_threshold", config.sift_peak_threshold)),
-        sift_edge_threshold=int(updates.get("sift_edge_threshold", config.sift_edge_threshold)),
-        colmap_bin=updates.get("colmap_bin", config.colmap_bin),
-        glomap_bin=updates.get("glomap_bin", config.glomap_bin),
-        resume=bool(updates.get("resume", config.resume)),
-        min_points3d=int(updates.get("min_points3d", config.min_points3d)),
-        params_json=config.params_json,
-    )
+    return replace(config, **updates)
 
 
 def _resolve_sfm_config(
@@ -533,6 +513,20 @@ def _assess_mapper_feasibility(num_images: int, inlier_ratio: float, use_gpu: bo
     
     return msg
 
+def _query_db(db: str, queries: dict[str, str]) -> dict[str, int]:
+    """Execute multiple SQL queries in one transaction.
+    
+    Args:
+        db: database.db path
+        queries: dict mapping keys to SQL queries
+        
+    Returns:
+        dict mapping keys to query results (first column as int, defaulting to 0 if NULL)
+    """
+    with sqlite3.connect(db) as conn:
+        return {k: (conn.execute(sql).fetchone() or [0])[0] for k, sql in queries.items()}
+
+
 def check_features(db: str) -> dict:
     """
     驗證特徵提取是否成功（Step 1 檢查）
@@ -581,21 +575,14 @@ def check_features(db: str) -> dict:
     
     # 2. 連接數據庫並查詢統計
     try:
-        conn = sqlite3.connect(db)
-        cursor = conn.cursor()
-        
-        # 查詢 keypoints 表 - keypoints.rows 存儲每個圖像的實際特徵數
-        cursor.execute("SELECT COUNT(*) FROM keypoints")
-        images_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT SUM(rows) FROM keypoints")
-        total_keypoints = cursor.fetchone()[0]
-        
-        # 查詢 descriptors 確保一致性
-        cursor.execute("SELECT COUNT(*) FROM descriptors")
-        descriptors_rows = cursor.fetchone()[0]
-        
-        conn.close()
+        row = _query_db(db, {
+            "images_count": "SELECT COUNT(*) FROM keypoints",
+            "total_keypoints": "SELECT SUM(rows) FROM keypoints",
+            "descriptors_rows": "SELECT COUNT(*) FROM descriptors",
+        })
+        images_count = row["images_count"]
+        total_keypoints = row["total_keypoints"]
+        descriptors_rows = row["descriptors_rows"]
     except Exception as e:
         return _report(
             "Step 1 特徵提取驗證",
@@ -690,28 +677,14 @@ def check_matching(db: str) -> dict:
     
     # 2. 連接數據庫查詢匹配統計
     try:
-        conn = sqlite3.connect(db)
-        cursor = conn.cursor()
-        
-        # 查詢實際匹配點數（SUM(rows)，每個 pair 存儲多個點）
-        cursor.execute("SELECT SUM(rows) FROM matches")
-        num_matches = cursor.fetchone()[0] or 0
-        
-        # 查詢幾何驗證通過的內點數
-        cursor.execute("SELECT SUM(rows) FROM two_view_geometries")
-        num_inlier_matches = cursor.fetchone()[0] or 0
-        
-        # 統計對數（用於計算平均匹配密度）
-        cursor.execute("SELECT COUNT(*) FROM matches WHERE rows > 0")
-        num_attempted_pairs = cursor.fetchone()[0] or 1
-        
-        conn.close()
-        
-        # 3. 計算關鍵指標
-        # inlier_ratio = 幾何驗證通過的點數 / 原始匹配點數
-        inlier_ratio = num_inlier_matches / num_matches if num_matches > 0 else 0
-        avg_matches_per_pair = num_matches / num_attempted_pairs if num_attempted_pairs > 0 else 0
-        
+        row = _query_db(db, {
+            "num_matches": "SELECT SUM(rows) FROM matches",
+            "num_inlier": "SELECT SUM(rows) FROM two_view_geometries",
+            "num_pairs": "SELECT COUNT(*) FROM matches WHERE rows > 0",
+        })
+        num_matches = row["num_matches"] or 0
+        num_inlier_matches = row["num_inlier"] or 0
+        num_attempted_pairs = row["num_pairs"] or 1
     except Exception as e:
         return _report(
             "Step 2 匹配驗證",
@@ -719,6 +692,10 @@ def check_matching(db: str) -> dict:
             [f"無法查詢匹配表: {str(e)}"],
             []
         )
+    
+    # 3. 計算關鍵指標
+    inlier_ratio = num_inlier_matches / num_matches if num_matches > 0 else 0
+    avg_matches_per_pair = num_matches / num_attempted_pairs if num_attempted_pairs > 0 else 0
     
     # 4. 驗證品質
     errors = []
