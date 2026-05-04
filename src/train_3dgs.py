@@ -13,6 +13,14 @@ Phase 1B: 3D Gaussian Splatting Training
 ========================================
 gsplat (Berkeley) from COLMAP sparse/0.
 
+Prerequisites (Phase 1A must complete first):
+  1. Run: python -m src.sfm_colmap
+     → Generates outputs/SfM_models/sift/sparse/0
+  2. Verify: outputs/reports/pointcloud_validation_*.json exists
+  3. Check: can_proceed_to_3dgs = true in that report
+  
+  If any Phase 1A gate fails, sfm_colmap.py will halt with diagnostic.
+
 Quick start:
   python -m src.train_3dgs
 
@@ -23,6 +31,13 @@ Full params:
       --outdir outputs/3DGS_models \\
       --iterations 30000 \\
       --sh-degree 3
+
+Output:
+  After training completes:
+  - 3DGS model checkpoint: outputs/3DGS_models/ckpt_final.ply
+  - Training metrics: outputs/3DGS_models/logs/train_*.json
+  - SSIM validation scores (if eval enabled): val_step*.json
+  - Decision layer notification: outputs/agent_events/
 """
 
 import subprocess, json, shutil
@@ -77,6 +92,52 @@ MCMC_PRESET_DEFAULTS = {
 
 @dataclass
 class TrainConfig:
+    """Phase 1B gsplat 3DGS training configuration.
+    
+    Requires Phase 1A (sfm_colmap.py) to complete successfully with:
+    - COLMAP sparse model with ≥ 50,000 points
+    - Feature extraction and matching validated
+    
+    Parameters are split into three categories:
+    
+    **Core training (from DEFAULT_TRAIN_PARAMS):**
+        train_mode: "default" or "mcmc" (mcmc=Monte Carlo dropout sampling).
+        imgdir: Input image directory (from Phase 0).
+        colmap: Path to COLMAP sparse model from Phase 1A.
+        outdir: Output directory for trained 3DGS models.
+        iterations: Training steps (typical: 20,000-50,000).
+        sh_degree: Spherical harmonics degree (0-3, higher=more colors).
+        densify_until: Stop densifying Gaussians at this step (~50% of iterations).
+        scene_scale: Manual scene scale override (0.0=auto-detect from COLMAP).
+        scale_json: Path to agent-computed scale estimates (empty=use scene_scale).
+        eval_steps: Interval for validation evaluation (1000 typical).
+        data_factor: Image downsampling factor (1=full, 2=half res).
+    
+    **Regularization:**
+        absgrad: Use absolute gradient for densification (more aggressive).
+        grow_grad2d: Threshold for gradient-based densification (0.0002 typical).
+        antialiased: Apply antialiasing during rasterization (slower, better edges).
+        random_bkgd: Random background (False=white, True=random per view).
+        opacity_reg: L1 regularization on opacity (0.0-0.05; higher=sparser).
+    
+    **MCMC-specific (only if train_mode="mcmc"):**
+        mcmc_min_opacity: Minimum opacity threshold (default None, see MCMC_PRESET_DEFAULTS).
+        mcmc_noise_lr: Noise learning rate multiplier (default None, from preset).
+        cap_max: Maximum Gaussian count (~1M typical, agent-tunable for memory).
+    
+    **Pose & appearance optimization:**
+        pose_opt: Optimize camera poses during training (risky for SfM poses).
+        app_opt: Optimize appearance embeddings (enables view-dependent effects).
+    
+    **Output:**
+        disable_video: Skip video rendering after training (fast mode).
+        loss_mask_dir: Path to per-image loss masks (empty=no masking).
+    
+    MCMC Preset Relationships:
+        opacity_reg ↔ mcmc_min_opacity: Higher opacity_reg works with higher min_opacity
+        scale_reg ↔ grow_grad2d: Larger scale_reg requires smaller grow_grad2d
+        noise_lr effect: Higher noise_lr = more aggressive sampling noise injection
+    """
     train_mode: str
     imgdir: str
     colmap: str

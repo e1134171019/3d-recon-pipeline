@@ -4,6 +4,7 @@ import sys
 import io
 import json
 from pathlib import Path
+from datetime import datetime
 
 
 def ensure_utf8_stdout() -> None:
@@ -47,4 +48,22 @@ def read_json_robust(path: Path) -> dict:
     raise last_error if last_error is not None else ValueError(f"無法解析 JSON：{path}")
 
 
-__all__ = ["ensure_utf8_stdout", "read_json_robust"]
+def generate_compact_timestamp() -> str:
+    """Generate compact timestamp ID for contracts and logs.
+    
+    Format: YYYYMMDDhhmmss (14 digits, no separators)
+    
+    Examples:
+        >>> ts = generate_compact_timestamp()
+        >>> len(ts)
+        14
+        >>> ts  # doctest: +SKIP
+        '20260505143022'
+    
+    Returns:
+        Compact timestamp string suitable for IDs and file names.
+    """
+    return datetime.now().strftime('%Y%m%d%H%M%S')
+
+
+__all__ = ["ensure_utf8_stdout", "read_json_robust", "generate_compact_timestamp"]

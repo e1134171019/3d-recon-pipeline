@@ -17,6 +17,35 @@ Phase 1A - SfM 重建（唯一入口）
 
 斷點續跑（已有 database 時跳過特徵提取和匹配）：
   python -m src.sfm_colmap --resume
+
+Phase 1A → Phase 1B 過渡條件（自動檢查）
+======================================
+Phase 1A 完成後必須滿足以下條件才能進入 Phase 1B（train_3dgs.py）：
+
+1. **特徵提取驗證** (check_features):
+   ✓ Average features per image ≥ 500
+   ✓ Total descriptors in DB ≥ 10,000
+   ✓ DB size ≥ 50 MB (indicates dense feature database)
+
+2. **特徵匹配驗證** (check_matching):
+   ✓ Matched image pairs ≥ 3
+   ✓ Inlier ratio ≥ 0.1 (COLMAP official threshold from GitHub)
+   ✓ Average inliers per match ≥ 10
+
+3. **稀疏重建驗證** (check_reconstruction):
+   ✓ Cameras ≥ 3 (minimum for 3D reconstruction)
+   ✓ Registered images ≥ 3
+   ✓ 3D points ≥ min_points3d (default: 50,000)
+   ✓ can_proceed_to_3dgs = true
+
+If all checks pass:
+  → PointCloud validation report written to outputs/reports/
+  → train_3dgs.py will read this report to authorize Phase 1B
+  → Scene scale automatically detected or taken from scale_json
+
+If any check fails:
+  → Phase 1A terminates with detailed diagnostic
+  → Suggestions for adjusting parameters (--max_features, --max_image_size, etc.)
 """
 from pathlib import Path
 from dataclasses import dataclass, replace
@@ -58,6 +87,34 @@ _SFM_PARAM_TYPES = {
 
 @dataclass(frozen=True)
 class SfmConfig:
+    """Phase 1A COLMAP SfM reconstruction configuration.
+    
+    This config drives feature extraction, matching, and sparse reconstruction.
+    Validation gates ensure quality before Phase 1B (3DGS training).
+    
+    Attributes:
+        imgdir: Input image directory path.
+        work: Working directory for COLMAP intermediate files.
+        use_gpu: Enable GPU acceleration for feature extraction/matching.
+        max_image_size: Resize images to this size if larger (0=no resize). 
+        max_features: SIFT features per image (~2000-4000 typical).
+        seq_overlap: Image sequence overlap for incremental mapper (10-15 typical).
+        loop_detection: Enable loop closure detection (slower but more robust).
+        mapper_type: "incremental" or "glomap" (glomap for global optimization).
+        sift_peak_threshold: SIFT peak threshold (default 0.0067, lower=more features).
+        sift_edge_threshold: SIFT edge threshold (default 10, higher=stricter).
+        colmap_bin: Path to colmap executable (auto-discovered if None).
+        glomap_bin: Path to glomap executable (required if mapper_type="glomap").
+        resume: Resume from existing DB if present (skip feature extraction).
+        min_points3d: Minimum 3D points for Phase 1A→1B gate (default 50,000).
+            Typical: 50,000-200,000 depending on scene complexity.
+        params_json: Path to agent-provided param overrides (empty=defaults).
+    
+    Critical gates (checked before proceeding to Phase 1B):
+        - avg_features_per_image ≥ 500 (checked in check_features())
+        - matched_image_pairs_inlier_ratio ≥ 0.1 (COLMAP official threshold)
+        - num_points3d ≥ min_points3d (checked in check_reconstruction())
+    """
     imgdir: str
     work: str
     use_gpu: bool
