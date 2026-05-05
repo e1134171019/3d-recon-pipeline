@@ -342,24 +342,38 @@ def _write_sfm_complete_contract(
     mapper_type: str,
     best_sparse: Path,
     result3: dict,
+    dense_ply: Path | None = None,
 ) -> dict[str, str]:
+    artifacts = {
+        "pointcloud_report": paths.reports_dir / "pointcloud_validation_report.json",
+        "sparse_dir": best_sparse,
+        "database": Path(paths.db),
+    }
+    
+    # 添加密集點雲到 artifacts（P0 突破口）
+    if dense_ply is not None and dense_ply.exists():
+        artifacts["dense_ply"] = dense_ply
+    
+    metrics = {
+        "cameras_count": result3["cameras_count"],
+        "images_count": result3["images_count"],
+        "registered_images_count": result3["registered_images_count"],
+        "points3d_count": result3["points3d_count"],
+        "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
+    }
+    
+    # 添加密集點數統計
+    if dense_ply is not None and dense_ply.exists():
+        file_size_mb = dense_ply.stat().st_size / (1024 * 1024)
+        metrics["dense_ply_size_mb"] = file_size_mb
+    
     return write_stage_contract(
         project_root=paths.project_root,
         run_root=paths.outputs_root,
         stage="sfm_complete",
         status="completed" if result3["can_proceed_to_3dgs"] else "blocked",
-        artifacts={
-            "pointcloud_report": paths.reports_dir / "pointcloud_validation_report.json",
-            "sparse_dir": best_sparse,
-            "database": Path(paths.db),
-        },
-        metrics={
-            "cameras_count": result3["cameras_count"],
-            "images_count": result3["images_count"],
-            "registered_images_count": result3["registered_images_count"],
-            "points3d_count": result3["points3d_count"],
-            "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
-        },
+        artifacts=artifacts,
+        metrics=metrics,
         params={
             "imgdir": str(paths.img.resolve()),
             "work": str(paths.work_p.resolve()),
@@ -909,6 +923,80 @@ def export_signals(result3: dict, sparse_model_dir: str, reports_dir: Path) -> N
     print(f"[OK] 驗證報告已導出：{report_file.resolve()}")
 
 
+def _run_stereo_fusion_step(
+    colmap_exe: str,
+    db: str,
+    img: Path,
+    work_p: Path,
+    enable_fusion: bool = True,
+) -> Path | None:
+    """
+    Execute COLMAP stereo_fusion to generate dense point cloud.
+    
+    This creates a million-scale dense initialization for 3DGS by fusing
+    depth maps estimated from feature matching geometry.
+    
+    Args:
+        colmap_exe: Path to colmap executable.
+        db: Path to COLMAP database.
+        img: Path to image directory.
+        work_p: Working directory path.
+        enable_fusion: Whether to run fusion (skip if False).
+    
+    Returns:
+        Path to fused.ply if successful, None if skipped or failed.
+    """
+    if not enable_fusion:
+        print("[*] Dense cloud fusion skipped (enable_fusion=False)")
+        return None
+    
+    dense_root = work_p / "dense"
+    dense_root.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print("\n" + "─"*70)
+        print("⏳ 執行 patch_match_stereo 深度估計...")
+        print("─"*70)
+        
+        # Step 1: patch_match_stereo (估計每張圖的深度)
+        run([
+            colmap_exe, "patch_match_stereo",
+            "--workspace_path", str(dense_root),
+            "--workspace_format", "COLMAP",
+            "--max_image_size", "2000",
+            "--gpu_index", "0",
+        ])
+        
+        print("\n" + "─"*70)
+        print("⏳ 執行 stereo_fusion 生成密集點雲...")
+        print("─"*70)
+        
+        # Step 2: stereo_fusion (融合深度圖成點雲)
+        fused_ply = dense_root / "fused.ply"
+        run([
+            colmap_exe, "stereo_fusion",
+            "--workspace_path", str(dense_root),
+            "--workspace_format", "COLMAP",
+            "--output_type", "PLY",
+            "--output_path", str(fused_ply),
+        ])
+        
+        if fused_ply.exists():
+            file_size_mb = fused_ply.stat().st_size / (1024 * 1024)
+            print(f"\n✅ Dense point cloud generated: {fused_ply.resolve()}")
+            print(f"   File size: {file_size_mb:.1f} MB")
+            return fused_ply
+        else:
+            print(f"⚠️  stereo_fusion 完成但找不到輸出檔案：{fused_ply}")
+            return None
+    
+    except subprocess.CalledProcessError as e:
+        print(f"\n⚠️  stereo_fusion 步驟失敗 (exit code {e.returncode})")
+        print(f"   這通常不是致命錯誤 — 稀疏點雲可能仍然可用")
+        print(f"   錯誤詳情：{e}")
+        return None
+
+
 def _run_mapper_step(
     mapper_type: str,
     colmap_exe: str,
@@ -1062,6 +1150,16 @@ def main(
         print("⏳ Mapper 完成 - 正在驗證重建結果...")
         print("─"*70 + "\n")
         
+        # 4) 密集點雲重建 (Dense Cloud stereo_fusion) - P0 突破口 1
+        print("[*] Step 3.5 - 執行密集點雲融合 (Dense Cloud stereo_fusion)...")
+        dense_ply = _run_stereo_fusion_step(
+            colmap_exe=colmap_exe,
+            db=paths.db,
+            img=paths.img,
+            work_p=paths.work_p,
+            enable_fusion=True,  # 可配置
+        )
+        
         # 🔍 診斷：Mapper 是否真的成功生成了 sparse/0
         sparse_root = paths.work_p / "sparse"
         best_sparse = _find_best_sparse_model(sparse_root)
@@ -1099,6 +1197,7 @@ def main(
             mapper_type=mapper_type,
             best_sparse=best_sparse,
             result3=result3,
+            dense_ply=dense_ply,  # P0 突破口 1：傳遞密集點雲路徑
         )
         print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
         print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")

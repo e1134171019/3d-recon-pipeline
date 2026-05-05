@@ -176,7 +176,7 @@
   - `agents/phase0/unity_param_gate.py` 與 `agents/phase0/unity_importer.py` 已於 2026-05-01 第二輪 ablation 驗證後移除；停用後 latest sfm/train/export 的正式 decision / next_action / selected candidate / dominant layer 無必要改善，且生產層未讀取 decision-layer 的 `unity_export_params.json` 或 `import_summary.json` 作正式接口。
   - 第二輪 ablation 報告：`C:\tmp\agent_stage_ablation\stage_ablation_report.json`。
   - 已修正：coordinator 會在 pack 未寫出 `phase0_report.json` 時，依 `pack_result`、`validation_report` 與 `decision_log` 生成正式 `phase0_report.json`，再交給 `current_state / arbiter / shared decision` 使用。
-  - 驗證：2026-05-01 replay latest train/export 後，train = `hold_export` + selected `VAL-001` + dominant `parameter`；export = `hold_phase_close` + selected `PPG-001` + dominant `parameter`。
+  - 驗證：2026-05-05 replay latest train/export 後，train = `hold_export` + selected `PPG-001` + dominant `parameter`；export = `hold_phase_close` + selected `PPG-001` + dominant `parameter`。
   - 已整理：`ArtifactResolver` 統一 contract artifact alias / fallback；`Phase0ReportGenerator` 統一 `phase0_report` 生成規則。兩者仍留在 `coordinator.py` 內，不新增核心檔，避免 6-core 膨脹。
   - 已整理：`ProblemLayerAnalyzer` 統一 `problem_layer` 單筆推斷與 candidate aggregation；`candidate_pool.py` 負責單一規則來源，`current_state.py` 只消費聚合結果。
 - **現況與 V1 schema 的對照**
@@ -207,7 +207,12 @@
 ### 1H. Agent 學習曲線與對話框 AI 退出條件
 - **學習曲線不是模型訓練曲線，而是決策品質曲線。** 目前 `learning_curve.json` 追蹤每輪 decision 的候選來源、problem layer、是否需人工審查、是否重複錯誤、是否浪費 run，以及估計 token 成本。
 - **未標籤的 hold decision 不計入 recommendation success。** `can_proceed=false` 的決策預設 `decision_useful=null`，必須由後續人工或實驗結果補標，避免把「暫停」誤當成功或失敗。
-- **candidate ranking 只使用已累積的正式 feedback。** 若某 source module 已有 outcome history，`candidate_pool.py` 會以 `effectiveness_rate` 優先，其次才以 `accepted_rate` 影響 `rank_score`。
+- **candidate ranking 只使用已累積的正式 feedback。** 若某 source module 已有 outcome history，`candidate_pool.py` 會以 `effectiveness_rate` 優先，其次才以 `accepted_rate` 影響 `rank_score`，且 `repeat_error_rate` 會作為負向懲罰。
+- **arbiter 的 hold-path 現在正式吃 `rank_score`。** 當同一 `problem_layer` 內有多個候選時，`arbiter.py` 會優先選 `rank_score` 較高者；pass path 仍保留 stage gate 的穩定語義，避免一次把整個裁決器改成純分數機制。
+- **ProductionParamGate 已改成真 gate。** 只有 `sfm_plan` 或 `train_plan` 真的產出可執行 rerun 參數時才會 `approved=true`；若只是維持現況或缺資料，正式狀態必須是 `hold_manual_review`，不得再用永遠通過的 `approved=true` 假裝有 gate。
+- **ProductionParamGate 現在有正式 gate status。** `evaluate()` 會回傳 `gate_status / reason / sfm_profile / train_profile`；pack 端會依結果分流成 `production_params_ready`、`production_params_hold`、`production_params_failed`。只有 `ready` 才代表可直接回寫生產層做 rerun。
+- **AdaptiveThreshold 已接到正式 feedback。** `D:\agent_test\adapters\adaptive_threshold.py` 現在優先讀 `outputs/phase0/*/*/outcome_feedback.json` 重建品質門檻歷史，只有缺少正式 feedback 時才回退舊 `phase0_decisions.log`；之後不得再把舊 log 視為唯一學習來源。
+- **PyTorch 模型目前只允許離線實驗。** `D:\agent_test\adapters\pytorch_decision_model.py` 可用正式 `outcome_feedback` 訓練 `decision_useful` 分類器，但在樣本量足夠前，不得直接接管 `arbiter` 或覆寫 `latest_*_decision.json`。
 - **對話框 AI 的退出不是關閉，而是降級。** 當最近窗口滿足：足夠決策數、recommendation success rate ≥ 0.70、human override rate < 0.20、repeat error rate < 0.10、critical bad release = 0，才建議由 meta-evaluator 降為 observer-only。
 - **目前狀態仍是 keep_meta_evaluator。** 2026-05-01 replay latest train/export 後，`learning_curve.json` 可正常產生，但兩筆皆為 `held_for_review` 且尚未人工標籤，因此仍不能宣稱 agent 已可自主優化。
 - **人工標籤必須走 CLI，不手改 JSON。** 若要標記某輪決策是否有用，使用 `D:\agent_test\run_phase0.py --label-feedback <outcome_feedback.json> --decision-useful true|false ...`。CLI 會更新 `outcome_feedback.json` 並重算同一 stage 目錄下的 `learning_curve.json`。

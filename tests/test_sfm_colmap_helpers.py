@@ -391,31 +391,32 @@ class SfmColmapHelpersTests(unittest.TestCase):
                                 },
                             ):
                                 with mock.patch.object(sfm_colmap, "_run_mapper_step") as mapper:
-                                    with mock.patch.object(sfm_colmap, "_find_best_sparse_model", return_value=best_sparse):
-                                        with mock.patch.object(
-                                            sfm_colmap,
-                                            "check_reconstruction",
-                                            return_value={
-                                                "pass": True,
-                                                "cameras_count": 3,
-                                                "images_count": 40,
-                                                "registered_images_count": 40,
-                                                "points3d_count": 70000,
-                                                "can_proceed_to_3dgs": True,
-                                            },
-                                        ) as check_recon:
-                                            with mock.patch.object(sfm_colmap, "export_signals") as export_signals:
-                                                with mock.patch.object(
-                                                    sfm_colmap,
-                                                    "write_stage_contract",
-                                                    return_value={
-                                                        "local_contract": "local.json",
-                                                        "event_file": "event.json",
-                                                    },
-                                                ) as write_contract:
-                                                    with mock.patch.object(sfm_colmap.time, "time", side_effect=[100.0, 250.0]):
-                                                        with mock.patch("builtins.print"):
-                                                            sfm_colmap.main(params_json=str(params))
+                                    with mock.patch.object(sfm_colmap, "_run_stereo_fusion_step", return_value=None):
+                                        with mock.patch.object(sfm_colmap, "_find_best_sparse_model", return_value=best_sparse):
+                                            with mock.patch.object(
+                                                sfm_colmap,
+                                                "check_reconstruction",
+                                                return_value={
+                                                    "pass": True,
+                                                    "cameras_count": 3,
+                                                    "images_count": 40,
+                                                    "registered_images_count": 40,
+                                                    "points3d_count": 70000,
+                                                    "can_proceed_to_3dgs": True,
+                                                },
+                                            ) as check_recon:
+                                                with mock.patch.object(sfm_colmap, "export_signals") as export_signals:
+                                                    with mock.patch.object(
+                                                        sfm_colmap,
+                                                        "write_stage_contract",
+                                                        return_value={
+                                                            "local_contract": "local.json",
+                                                            "event_file": "event.json",
+                                                        },
+                                                    ) as write_contract:
+                                                        with mock.patch.object(sfm_colmap.time, "time", side_effect=[100.0, 250.0]):
+                                                            with mock.patch("builtins.print"):
+                                                                sfm_colmap.main(params_json=str(params))
 
             find_colmap.assert_called_once_with("C:/tools/colmap.exe")
             find_glomap.assert_called_once_with("C:/tools/glomap.exe")
