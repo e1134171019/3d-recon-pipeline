@@ -1,0 +1,7 @@
+.venv_scaffold/
+scaffold_venv/
+gsplat_scaffold/
+data/
+outputs/
+repo/
+setup_scaffold_env.ps1

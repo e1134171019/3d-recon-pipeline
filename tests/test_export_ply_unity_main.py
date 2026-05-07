@@ -52,7 +52,15 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             data_path.mkdir(parents=True)
         if params_json:
             params_path.write_text(
-                json.dumps({"recommended_params": {"min_opacity": 0.5, "max_scale": 2.0}}),
+                json.dumps(
+                    {
+                        "recommended_params": {
+                            "min_opacity": 0.5,
+                            "max_scale": 2.0,
+                            "max_scale_percentile": 80.0,
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -110,6 +118,7 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             self.assertEqual(kwargs["metrics"]["num_splats"], 2)
             self.assertEqual(kwargs["metrics"]["min_opacity"], 0.5)
             self.assertEqual(kwargs["metrics"]["max_scale"], 2.0)
+            self.assertEqual(kwargs["metrics"]["max_scale_percentile"], 80.0)
             self.assertTrue(kwargs["params"]["unity"])
             self.assertFalse(kwargs["params"]["no_denormalize"])
             trigger.assert_called_once()
@@ -212,6 +221,58 @@ class ExportPlyUnityMainTests(unittest.TestCase):
         for rotation, expected in rotations:
             quat = export_ply_unity.rotmat_to_quat(rotation)
             np.testing.assert_allclose(np.abs(quat), expected, atol=1e-6)
+
+    def test_apply_export_filters_supports_percentile_threshold(self):
+        means = np.array([[0.0, 0.0, 0.0]] * 3, dtype=np.float32)
+        scales = np.log(
+            np.array(
+                [
+                    [0.5, 0.5, 0.5],
+                    [1.0, 1.0, 1.0],
+                    [10.0, 10.0, 10.0],
+                ],
+                dtype=np.float32,
+            )
+        )
+        quats = np.ones((3, 4), dtype=np.float32)
+        opacities = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        sh0 = np.zeros((3, 1, 3), dtype=np.float32)
+        shN = np.zeros((3, 15, 3), dtype=np.float32)
+
+        with mock.patch("builtins.print"):
+            out = export_ply_unity._apply_export_filters(
+                means,
+                scales,
+                quats,
+                opacities,
+                sh0,
+                shN,
+                max_scale_percentile=80.0,
+            )
+
+        filtered_means, _, _, _, _, _, meta = out
+        self.assertEqual(filtered_means.shape[0], 2)
+        self.assertGreater(meta["effective_max_scale"], 1.0)
+        self.assertLess(meta["effective_max_scale"], 10.0)
+
+    def test_apply_export_filters_rejects_invalid_percentile(self):
+        means = np.zeros((1, 3), dtype=np.float32)
+        scales = np.zeros((1, 3), dtype=np.float32)
+        quats = np.ones((1, 4), dtype=np.float32)
+        opacities = np.zeros((1,), dtype=np.float32)
+        sh0 = np.zeros((1, 1, 3), dtype=np.float32)
+        shN = np.zeros((1, 15, 3), dtype=np.float32)
+
+        with self.assertRaises(ValueError):
+            export_ply_unity._apply_export_filters(
+                means,
+                scales,
+                quats,
+                opacities,
+                sh0,
+                shN,
+                max_scale_percentile=120.0,
+            )
 
 
 if __name__ == "__main__":

@@ -147,6 +147,10 @@ python scripts/cleanup_agent_mailboxes.py --apply
 - 保留 `1M MCMC` 作離線品質 benchmark
 - 以 `750k + antialiased` 作最新 Unity 候選部署版
 - 繼續完成 Unity 端的 FPS / VRAM / 視覺驗證
+- 若畫質仍卡在白霧 / halo / 拖影，優先改走 `export_ply_unity.py` 的 export-side probe：
+  - `min_opacity`
+  - `max_scale`
+  - `max_scale_percentile`
 
 正式設計見：
 
