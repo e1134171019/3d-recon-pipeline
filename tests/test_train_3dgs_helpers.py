@@ -30,7 +30,6 @@ class Train3DGSHelpersTests(unittest.TestCase):
             "mcmc_min_opacity": None,
             "mcmc_noise_lr": None,
             "mcmc_refine_stop_iter": None,
-            "mcmc_noise_injection_stop_iter": None,
             "opacity_reg": 0.0,
             "ssim_lambda": None,
             "use_bilateral_grid": False,
@@ -418,7 +417,6 @@ class Train3DGSHelpersTests(unittest.TestCase):
             mcmc_min_opacity=None,
             mcmc_noise_lr=None,
             mcmc_refine_stop_iter=None,
-            mcmc_noise_injection_stop_iter=None,
             opacity_reg=0.0,
             ssim_lambda=None,
             use_bilateral_grid=False,
@@ -446,7 +444,6 @@ class Train3DGSHelpersTests(unittest.TestCase):
             mcmc_min_opacity=0.01,
             mcmc_noise_lr=100000.0,
             mcmc_refine_stop_iter=None,
-            mcmc_noise_injection_stop_iter=None,
             opacity_reg=0.02,
             ssim_lambda=None,
             use_bilateral_grid=False,
@@ -868,15 +865,13 @@ class BuildTrainerArgsMcmcKnobsTests(unittest.TestCase):
         self.assertEqual(self._flag_value(args, "--strategy.refine-stop-iter"), "15000")
         self.assertEqual(eff["refine_stop_iter"], 15_000)
 
-    def test_mcmc_noise_injection_stop_iter_emitted(self):
-        cfg = self._config(train_mode="mcmc", mcmc_noise_injection_stop_iter=22_000)
-        args, _, _ = self._build(cfg)
-        self.assertEqual(
-            self._flag_value(args, "--strategy.noise-injection-stop-iter"),
-            "22000",
-        )
-
-    def test_mcmc_noise_injection_stop_iter_omitted_by_default(self):
+    def test_noise_injection_stop_iter_flag_never_emitted(self):
+        # gsplat upstream's MCMCStrategy does not expose a
+        # `noise_injection_stop_iter` field. The wrapper therefore must
+        # never emit `--strategy.noise-injection-stop-iter` regardless of
+        # the configuration. The previous knob has been removed entirely
+        # because emitting it caused gsplat to abort with
+        # "Unrecognized options: --strategy.noise-injection-stop-iter".
         cfg = self._config(train_mode="mcmc")
         args, _, _ = self._build(cfg)
         self.assertNotIn("--strategy.noise-injection-stop-iter", args)
@@ -884,7 +879,6 @@ class BuildTrainerArgsMcmcKnobsTests(unittest.TestCase):
     def test_default_mode_does_not_emit_mcmc_only_flags(self):
         cfg = self._config(
             train_mode="default",
-            mcmc_noise_injection_stop_iter=22_000,
             cap_max=750_000,
         )
         args, _, _ = self._build(cfg)
@@ -913,12 +907,30 @@ class BuildTrainerArgsMcmcKnobsTests(unittest.TestCase):
         self.assertIn("--depth-loss", args)
         self.assertIn("--with-ut", args)
 
+    def test_with_ut_auto_emits_with_eval3d(self):
+        # gsplat upstream couples --with-ut and --with-eval3d via an
+        # internal assertion: "Training with UT requires setting
+        # `with_eval3d` flag." The wrapper must auto-emit --with-eval3d
+        # whenever --with-ut is on, otherwise the trainer aborts before
+        # the first iteration.
+        cfg = self._config(train_mode="mcmc", with_ut=True)
+        args, _, _ = self._build(cfg)
+        self.assertIn("--with-ut", args)
+        self.assertIn("--with-eval3d", args)
+
+    def test_with_eval3d_omitted_when_with_ut_off(self):
+        cfg = self._config(train_mode="mcmc", with_ut=False)
+        args, _, _ = self._build(cfg)
+        self.assertNotIn("--with-ut", args)
+        self.assertNotIn("--with-eval3d", args)
+
     def test_new_feature_flags_omitted_when_false(self):
         cfg = self._config(train_mode="mcmc")
         args, _, _ = self._build(cfg)
         self.assertNotIn("--use-bilateral-grid", args)
         self.assertNotIn("--depth-loss", args)
         self.assertNotIn("--with-ut", args)
+        self.assertNotIn("--with-eval3d", args)
 
 
 if __name__ == "__main__":
