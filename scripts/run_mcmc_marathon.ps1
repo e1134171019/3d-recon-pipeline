@@ -34,6 +34,10 @@
     status=fail（或 exception）的 probe，僅重跑這些 probe 並更新原
     results.csv 對應 row。配合 -RetryBatchDir 可指定特定 batch。
 
+.PARAMETER Only
+    只跑指定 probe ID 的子集（可以多個，逗號分隔或多參數）。在 tier
+    過濾 + Resume 之後生效，不認得的 ID 會报错。適用於複現 / 補跑。
+
 .PARAMETER RetryBatchDir
     搭配 -RetryFailed 使用，明確指定要重跑的 batch 目錄絕對路徑。
     省略時自動取 OutputRoot 下最新的 batch_*。
@@ -56,6 +60,14 @@
 .EXAMPLE
     # 重跑最新一輪 batch 中失敗的 probe（自動找 latest batch_*）
     .\scripts\run_mcmc_marathon.ps1 -Tier S -RetryFailed
+
+.EXAMPLE
+    # 只跑單一 probe（補跑 / 複現）
+    .\scripts\run_mcmc_marathon.ps1 -Tier S -Only 02_aa_full_30k
+
+.EXAMPLE
+    # 只跑多個指定 probe（逗號分隔）
+    .\scripts\run_mcmc_marathon.ps1 -Tier S -Only 01_refine25k_full,02_aa_full_30k
 #>
 
 param(
@@ -64,6 +76,7 @@ param(
     [string]$ConfigPath = "",
     [switch]$DryRun,
     [switch]$RetryFailed,
+    [string[]]$Only = @(),
     [string]$OutputRoot = "",
     [string]$RetryBatchDir = ""
 )
@@ -117,6 +130,26 @@ if ($Resume -gt 1) {
     }
     $Probes = $Probes[($Resume - 1)..($Probes.Count - 1)]
     Write-Host "[Resume] 從第 $Resume 個 probe 開始"
+}
+
+# Only 過濾：只保留指定 ID 的 probe（支援逗號分隔或多參數）
+if ($Only -and $Only.Count -gt 0) {
+    # 逗號分隔拆開：-Only "a,b" 與 -Only a,b 都能工作
+    $OnlyIds = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($OnlyIds.Count -eq 0) {
+        throw "-Only 參數為空，請提供至少一個 probe ID。"
+    }
+    $Filtered = @($Probes | Where-Object { $OnlyIds -contains $_.id })
+    $AvailableIds = @($Probes | Select-Object -ExpandProperty id)
+    $Missing = @($OnlyIds | Where-Object { $AvailableIds -notcontains $_ })
+    if ($Missing.Count -gt 0) {
+        throw "-Only 中以下 ID 不在 tier=$Tier 的 configs 中：$($Missing -join ', ')。可用 ID：$($AvailableIds -join ', ')"
+    }
+    if ($Filtered.Count -eq 0) {
+        throw "-Only 過濾後沒有任何 probe。"
+    }
+    Write-Host "[Only] 只跑以下 probe：$($Filtered.id -join ', ')"
+    $Probes = $Filtered
 }
 
 # ── lib_bilagrid pre-check（如有 probe 用 bilateral grid，需先確認可 import）──
