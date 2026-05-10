@@ -4,12 +4,7 @@
 **最後整理**: 2026-04-18  
 **正式輸出根目錄**: `outputs/`
 
-> **共同治理摘要**
-> - 以目前專案結構與正式主線為準，不依單張圖片、單次對話、舊封存文件或舊路徑推斷架構。
-> - 任務開始前先依 [文件導航.md](/C:/3d-recon-pipeline/文件導航.md) 路由，再讀 [專案願景與當前狀態.md](/C:/3d-recon-pipeline/專案願景與當前狀態.md) 的「當前狀態」與任務對應正式文件；需要主線總覽時再讀本文件。
-> - 正式來源只有 9 份文件（8+1）；舊中文文件與 `docs/experiments/` 不再作為正式決策依據。
-> - 生產層：`C:\3d-recon-pipeline`；決策層：`D:\agent_test`；正式接口只看 `outputs/agent_events/latest_*_complete.json` 與 `outputs/agent_decisions/latest_*_decision.json`。
-> - 長任務必須開可見終端；PowerShell 空格路徑只用 `Start-Process -FilePath` 或 `& '完整路徑'`；coverage 只看正式主線六模組；修改前先列保留 / 刪除 / 歸檔建議。
+> **共同治理**：請見 [docs/_governance.md](docs/_governance.md)（治理戒律 + 正式 9 份說明書清單 + 跨層接口）。
 
 Windows 上的工業場景 3D 重建管線：影片抽幀 → L0 照片清洗/選幀 → COLMAP SfM → gsplat 3DGS 訓練 → 匯出 / Unity。正式系統同時包含生產層與決策層的 Gate 回圈通信。
 
