@@ -29,7 +29,13 @@ class Train3DGSHelpersTests(unittest.TestCase):
             "cap_max": 1_000_000,
             "mcmc_min_opacity": None,
             "mcmc_noise_lr": None,
+            "mcmc_refine_stop_iter": None,
+            "mcmc_noise_injection_stop_iter": None,
             "opacity_reg": 0.0,
+            "ssim_lambda": None,
+            "use_bilateral_grid": False,
+            "depth_loss": False,
+            "with_ut": False,
             "pose_opt": False,
             "app_opt": False,
             "disable_video": False,
@@ -408,9 +414,16 @@ class Train3DGSHelpersTests(unittest.TestCase):
             antialiased=False,
             random_bkgd=False,
             cap_max=1_000_000,
+            densify_until=15000,
             mcmc_min_opacity=None,
             mcmc_noise_lr=None,
+            mcmc_refine_stop_iter=None,
+            mcmc_noise_injection_stop_iter=None,
             opacity_reg=0.0,
+            ssim_lambda=None,
+            use_bilateral_grid=False,
+            depth_loss=False,
+            with_ut=False,
             pose_opt=False,
             app_opt=False,
         )
@@ -418,6 +431,8 @@ class Train3DGSHelpersTests(unittest.TestCase):
         self.assertEqual(effective["mcmc_min_opacity"], 0.005)
         self.assertEqual(effective["mcmc_noise_lr"], 500000.0)
         self.assertEqual(effective["mcmc_scale_reg"], 0.01)
+        # Bug fix: mcmc with default densify_until should use upstream 25k.
+        self.assertEqual(effective["refine_stop_iter"], 25_000)
 
     def test_resolve_effective_train_config_preserves_explicit_mcmc_override(self):
         effective = train_3dgs._resolve_effective_train_config(
@@ -427,9 +442,16 @@ class Train3DGSHelpersTests(unittest.TestCase):
             antialiased=True,
             random_bkgd=True,
             cap_max=750000,
+            densify_until=15000,
             mcmc_min_opacity=0.01,
             mcmc_noise_lr=100000.0,
+            mcmc_refine_stop_iter=None,
+            mcmc_noise_injection_stop_iter=None,
             opacity_reg=0.02,
+            ssim_lambda=None,
+            use_bilateral_grid=False,
+            depth_loss=False,
+            with_ut=False,
             pose_opt=True,
             app_opt=False,
         )
@@ -789,6 +811,114 @@ class Train3DGSHelpersTests(unittest.TestCase):
                         )
                     )
                 mocked_decision.assert_called_once()
+
+
+class BuildTrainerArgsMcmcKnobsTests(unittest.TestCase):
+    """Verify MCMC-specific CLI flags and the refine_stop_iter bug fix.
+
+    Historical bug: `_build_trainer_args` always appended
+    `--strategy.refine-stop-iter str(densify_until)` regardless of
+    train_mode, so MCMC runs received 15000 (DefaultStrategy default)
+    instead of gsplat's MCMC default of 25000 — starving MCMC of 40%
+    of its officially recommended refine budget.
+    """
+
+    def _config(self, **overrides) -> train_3dgs.TrainConfig:
+        params = dict(train_3dgs.DEFAULT_TRAIN_PARAMS)
+        params.update(overrides)
+        return train_3dgs.TrainConfig(**params)
+
+    def _build(self, cfg: train_3dgs.TrainConfig):
+        return train_3dgs._build_trainer_args(
+            cfg,
+            scene_dir=Path("/tmp/scene"),
+            out_dir=Path("/tmp/out"),
+            actual_scale=1.0,
+            loss_mask_path=None,
+        )
+
+    def _flag_value(self, args: list[str], flag: str) -> str | None:
+        if flag not in args:
+            return None
+        return args[args.index(flag) + 1]
+
+    def test_mcmc_default_uses_upstream_refine_stop_25k_not_15k(self):
+        cfg = self._config(train_mode="mcmc")
+        args, _, eff = self._build(cfg)
+        self.assertEqual(self._flag_value(args, "--strategy.refine-stop-iter"), "25000")
+        self.assertEqual(eff["refine_stop_iter"], 25_000)
+
+    def test_mcmc_explicit_refine_stop_iter_override(self):
+        cfg = self._config(train_mode="mcmc", mcmc_refine_stop_iter=27000)
+        args, _, eff = self._build(cfg)
+        self.assertEqual(self._flag_value(args, "--strategy.refine-stop-iter"), "27000")
+        self.assertEqual(eff["refine_stop_iter"], 27_000)
+
+    def test_mcmc_user_densify_until_takes_precedence(self):
+        # When the user explicitly sets densify_until (≠ wrapper default 15000),
+        # we must NOT silently bump to 25000 — respect the user's intent.
+        cfg = self._config(train_mode="mcmc", densify_until=20_000)
+        args, _, eff = self._build(cfg)
+        self.assertEqual(self._flag_value(args, "--strategy.refine-stop-iter"), "20000")
+        self.assertEqual(eff["refine_stop_iter"], 20_000)
+
+    def test_default_mode_refine_stop_unchanged(self):
+        cfg = self._config(train_mode="default")
+        args, _, eff = self._build(cfg)
+        self.assertEqual(self._flag_value(args, "--strategy.refine-stop-iter"), "15000")
+        self.assertEqual(eff["refine_stop_iter"], 15_000)
+
+    def test_mcmc_noise_injection_stop_iter_emitted(self):
+        cfg = self._config(train_mode="mcmc", mcmc_noise_injection_stop_iter=22_000)
+        args, _, _ = self._build(cfg)
+        self.assertEqual(
+            self._flag_value(args, "--strategy.noise-injection-stop-iter"),
+            "22000",
+        )
+
+    def test_mcmc_noise_injection_stop_iter_omitted_by_default(self):
+        cfg = self._config(train_mode="mcmc")
+        args, _, _ = self._build(cfg)
+        self.assertNotIn("--strategy.noise-injection-stop-iter", args)
+
+    def test_default_mode_does_not_emit_mcmc_only_flags(self):
+        cfg = self._config(
+            train_mode="default",
+            mcmc_noise_injection_stop_iter=22_000,
+            cap_max=750_000,
+        )
+        args, _, _ = self._build(cfg)
+        self.assertNotIn("--strategy.cap-max", args)
+        self.assertNotIn("--strategy.noise-injection-stop-iter", args)
+
+    def test_ssim_lambda_emitted_when_set(self):
+        cfg = self._config(train_mode="mcmc", ssim_lambda=0.3)
+        args, _, _ = self._build(cfg)
+        self.assertEqual(self._flag_value(args, "--ssim-lambda"), "0.3")
+
+    def test_ssim_lambda_omitted_when_none(self):
+        cfg = self._config(train_mode="mcmc")
+        args, _, _ = self._build(cfg)
+        self.assertNotIn("--ssim-lambda", args)
+
+    def test_new_feature_flags_emitted(self):
+        cfg = self._config(
+            train_mode="mcmc",
+            use_bilateral_grid=True,
+            depth_loss=True,
+            with_ut=True,
+        )
+        args, _, _ = self._build(cfg)
+        self.assertIn("--use-bilateral-grid", args)
+        self.assertIn("--depth-loss", args)
+        self.assertIn("--with-ut", args)
+
+    def test_new_feature_flags_omitted_when_false(self):
+        cfg = self._config(train_mode="mcmc")
+        args, _, _ = self._build(cfg)
+        self.assertNotIn("--use-bilateral-grid", args)
+        self.assertNotIn("--depth-loss", args)
+        self.assertNotIn("--with-ut", args)
 
 
 if __name__ == "__main__":
