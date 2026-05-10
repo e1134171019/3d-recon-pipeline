@@ -217,6 +217,20 @@
 - **目前狀態仍是 keep_meta_evaluator。** 2026-05-01 replay latest train/export 後，`learning_curve.json` 可正常產生，但兩筆皆為 `held_for_review` 且尚未人工標籤，因此仍不能宣稱 agent 已可自主優化。
 - **人工標籤必須走 CLI，不手改 JSON。** 若要標記某輪決策是否有用，使用 `D:\agent_test\run_phase0.py --label-feedback <outcome_feedback.json> --decision-useful true|false ...`。CLI 會更新 `outcome_feedback.json` 並重算同一 stage 目錄下的 `learning_curve.json`。
 
+### 1I. Offline Learning 正式分層規則
+- **formal runtime 與 offline learning 必須分層。** 正式 `candidate_pool / current_state / arbiter / outcome_feedback` 先保持穩定；`Ollama/Qwen teacher`、歷史回填、`PyTorch` baseline 只能存在於 offline learning 層，不得直接改寫 `latest_*_decision.json`。
+- **本機 Ollama 的正式角色是 teacher，不是 runtime arbiter。** 它只負責：
+  - 對歷史 run / sandbox probe 產生語意標註
+  - 補 `role / issue_type / unity_result / next_recommendation / confidence`
+  - 作為對話框 AI 的低 token 本機前置判讀器
+- **PyTorch 的正式角色是 offline trainer，不是 test 本體。** 真正學習應在 `adapters/train_teacher_augmented_baseline.py` 或後續 trainer 腳本進行；`tests/test_pytorch_decision_model.py` 只驗證 schema、feature merge、mocked teacher output 與模型介面，不承擔真實 teacher loop 或長時間訓練。
+- **Qwen / Ollama 不得直接驅動 formal agent runtime。** 正式 runtime 只吃 contract / event / feedback；Qwen teacher 只能先把資料寫進 `outputs/offline_learning/*`，再由 offline learner 吸收。
+- **對話框 AI 的正式角色是 meta evaluator。** 它負責審查：
+  - teacher prompt / schema 是否合理
+  - offline learner 是否有 target leakage / overfitting
+  - 哪些 Scaffold / 新框架 probe 值得繼續
+  - 何時可把 offline learner 升成 advisory layer
+
 ## 2. 嚴密的 Gate 0~3 快速驗證協定
 為了不浪費算力，Agent 評估任何新增實驗（如 L0 洗幀）時，**必須絕對遵守**以下閥門標準，未過關者直接停止，嚴禁盲目推薦 full training：
 - **Gate 0 (Sanity)**：檢查 L0 清洗後的高光比例、保留特徵數、ROI 主體不被截斷。

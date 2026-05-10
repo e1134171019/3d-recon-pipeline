@@ -3,7 +3,18 @@ param(
     [string]$DatasetName = "factorygaussian",
     [string]$SceneName = "u_base_750k_aa",
     [string]$ExperimentName = "probe_win_20260507",
-    [string]$Gpu = "0"
+    [string]$Gpu = "0",
+    [int]$Iterations = 7000,
+    [double]$VoxelSize = 0.001,
+    [int]$UpdateInitFactor = 16,
+    [int]$AppearanceDim = 0,
+    [int]$Ratio = 1,
+    [int]$Resolution = -1,
+    [double]$LambdaDssim = 0.2,
+    [double]$MinOpacity = 0.005,
+    [switch]$UseFeatBank,
+    [ValidateSet("cuda", "cpu")]
+    [string]$DataDevice = "cuda"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,10 +40,39 @@ Write-Host "[RUN] Scaffold-GS probe (Windows sandbox)"
 Write-Host "Repo:   $repoRoot"
 Write-Host "Scene:  $sceneRoot"
 Write-Host "Output: $outputRoot"
+Write-Host "Iters:  $Iterations"
+Write-Host "Voxel:  $VoxelSize"
+Write-Host "Ratio:  $Ratio"
+Write-Host "Res:    $Resolution"
+Write-Host "DSSIM:  $LambdaDssim"
+Write-Host "MinOp:  $MinOpacity"
+Write-Host "FeatBk: $($UseFeatBank.IsPresent)"
+Write-Host "Data:   $DataDevice"
 
 Push-Location $repoRoot
 try {
-    & $venvPython train.py --eval -s $sceneRoot --lod 0 --gpu $Gpu --voxel_size 0.001 --update_init_factor 16 --appearance_dim 0 --ratio 1 --iterations 7000 -m $outputRoot
+    $trainArgs = @(
+        "train.py",
+        "--eval",
+        "-s", $sceneRoot,
+        "--lod", "0",
+        "--gpu", $Gpu,
+        "--voxel_size", $VoxelSize,
+        "--update_init_factor", $UpdateInitFactor,
+        "--appearance_dim", $AppearanceDim,
+        "--ratio", $Ratio,
+        "--resolution", $Resolution,
+        "--lambda_dssim", $LambdaDssim,
+        "--min_opacity", $MinOpacity,
+        "--data_device", $DataDevice,
+        "--iterations", $Iterations,
+        "-m", $outputRoot
+    )
+    if ($UseFeatBank) {
+        $trainArgs += "--use_feat_bank"
+    }
+
+    & $venvPython @trainArgs
 }
 finally {
     Pop-Location
