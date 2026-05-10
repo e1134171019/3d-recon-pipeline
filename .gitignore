@@ -19,3 +19,4 @@ _tmp*
 .idea/
 Thumbs.db
 Desktop.ini
+.env
