@@ -40,7 +40,8 @@ New-Item -ItemType Directory -Force -Path $unityExportsDir | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($AssetBaseName)) {
     $leaf = Split-Path -Leaf $modelPathResolved
-    $AssetBaseName = "${leaf}_view${CameraIndex}_${MaxSplats}k"
+    $leafShort = if ($leaf.Length -gt 24) { $leaf.Substring(0, 24) } else { $leaf }
+    $AssetBaseName = "sgs_${leafShort}_v${CameraIndex}_${([int]($MaxSplats / 1000))}k"
     $AssetBaseName = $AssetBaseName.Replace("-", "_")
 }
 
@@ -81,7 +82,12 @@ $exportOk = $false
 $exportError = ""
 try {
     & $venvPython @exportArgs
-    $exportOk = $true
+    if ($LASTEXITCODE -eq 0) {
+        $exportOk = $true
+    }
+    else {
+        $exportError = "Export script exited with code $LASTEXITCODE"
+    }
 }
 catch {
     $exportError = $_.Exception.Message
