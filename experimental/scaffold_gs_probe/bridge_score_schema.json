@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "schema_name": "scaffold_gs_bridge_score",
+  "framework": "scaffold_gs",
+  "role": "bridge_probe",
+  "source_run": "",
+  "iteration": -1,
+  "baseline_branch": {
+    "voxel_size": 0.01,
+    "appearance_dim": 0,
+    "use_feat_bank": false,
+    "lambda_dssim": 0.3,
+    "min_opacity": 0.003,
+    "data_device": "cpu"
+  },
+  "export": {
+    "camera_set": "test",
+    "camera_index": 0,
+    "candidate_splats": null,
+    "exported_splats": null,
+    "min_opacity": 0.0,
+    "max_splats": 300000,
+    "output_ply": "",
+    "report_json": "",
+    "output_size_mb": null,
+    "export_ok": false,
+    "export_error": ""
+  },
+  "unity_import": {
+    "unity_project": "",
+    "asset_base_name": "",
+    "log_path": "",
+    "asset_path": "",
+    "import_ok": false,
+    "success_marker_found": false,
+    "import_error": ""
+  },
+  "deployment_view": {
+    "near_view_result": "unknown",
+    "mid_view_result": "unknown",
+    "far_view_result": "unknown",
+    "fogging": "unknown",
+    "fragmentation": "unknown",
+    "structure_stability": "unknown",
+    "visual_result": "unknown",
+    "review_notes": ""
+  },
+  "performance": {
+    "fps": null,
+    "vram_mb": null
+  },
+  "gate": {
+    "export_gate_pass": false,
+    "import_gate_pass": false,
+    "deployment_review_pass": false,
+    "bridge_pass": false,
+    "reason": ""
+  }
+}
