@@ -10,19 +10,10 @@ description: "Use when working on the 3d-recon-pipeline or agent_test projects. 
   3. 依任務類型讀對應正式文件
   4. 必要時再讀 README.md
   未完成上述步驟禁止動手。
-- 正式來源只有 9 份文件（8+1）：
-  文件導航.md / README.md / 專案願景與當前狀態.md / AI代理作業守則.md /
-  docs/安裝與環境建置.md / docs/故障排查與急診室.md /
-  docs/實驗歷史與決策日誌.md / docs/L0洗幀管線設計.md / docs/未來路線圖與備用方案.md
-- 生產層：C:\3d-recon-pipeline
-- 決策層：D:\agent_test
-- 決策層只讀正式 contract/event，不直接定義生產層真相。
-- 正式 agent 介面：
-  - outputs/agent_events/latest_*_complete.json
-  - outputs/agent_decisions/latest_*_decision.json
+- 正式治理、正式文件清單、跨層邊界、正式 agent 介面與 coverage 口徑，一律以 `docs/_governance.md` 為準。
+- 不得用單張圖片、單次對話、舊封存文件、舊路徑或未列入正式治理的檔案，覆蓋正式主線。
 - 長時間任務必須開可見終端；啟動前清查舊 watcher、重複 watcher、殘留 python/colmap/glomap 進程。
 - PowerShell 路徑含空格時，一律使用 Start-Process -FilePath 或 & '完整路徑'，不得裸寫命令字串。
-- coverage 只看正式主線六模組，不把 outputs、scripts、experimental、gsplat_runner、unity_setup 混入 coverage。
 - 修改前先列出保留 / 刪除 / 歸檔建議。
 
 ## Codex CLI / VS Code 終端規則

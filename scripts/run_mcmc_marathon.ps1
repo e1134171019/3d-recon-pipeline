@@ -154,19 +154,32 @@ if ($Only -and $Only.Count -gt 0) {
 
 # ── lib_bilagrid pre-check（如有 probe 用 bilateral grid，需先確認可 import）──
 function Test-LibBilagridAvailable {
-    param([string]$PythonPath)
+    param(
+        [string]$PythonPath,
+        [string]$RepoRoot
+    )
     if (-not (Test-Path $PythonPath)) {
         return $false
     }
+    $RunnerDir = Join-Path $RepoRoot "gsplat_runner"
+    $repoLocal = Join-Path $RunnerDir "lib_bilagrid.py"
+    if (Test-Path $repoLocal) {
+        return $true
+    }
     $checkScript = 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("lib_bilagrid") else 1)'
-    & $PythonPath -c $checkScript 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    Push-Location $RunnerDir
+    try {
+        & $PythonPath -c $checkScript 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        Pop-Location
+    }
 }
 
 $NeedsBilagrid = @($Probes | Where-Object { $_.use_bilateral_grid })
 $BilagridAvailable = $true
 if ($NeedsBilagrid.Count -gt 0 -and -not $DryRun) {
-    $BilagridAvailable = Test-LibBilagridAvailable -PythonPath $Python
+    $BilagridAvailable = Test-LibBilagridAvailable -PythonPath $Python -RepoRoot $Root
     if (-not $BilagridAvailable) {
         Write-Host "[bilagrid] lib_bilagrid 在 venv 中找不到。受影響的 probe 將被標記為 skipped（不視為 fail）。" -ForegroundColor Yellow
         Write-Host "[bilagrid] 安裝指令：" -ForegroundColor Yellow

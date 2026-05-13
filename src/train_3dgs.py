@@ -201,6 +201,21 @@ TRAIN_CONTRACT_PARAM_KEYS = (
     "ssim_lambda", "use_bilateral_grid", "depth_loss", "with_ut",
 )
 
+EFFECTIVE_CONTRACT_PARAM_MAP = {
+    "absgrad": "absgrad",
+    "grow_grad2d": "grow_grad2d",
+    "antialiased": "antialiased",
+    "random_bkgd": "random_bkgd",
+    "cap_max": "cap_max",
+    "opacity_reg": "opacity_reg",
+    "ssim_lambda": "ssim_lambda",
+    "use_bilateral_grid": "use_bilateral_grid",
+    "depth_loss": "depth_loss",
+    "with_ut": "with_ut",
+    "pose_opt": "pose_opt",
+    "app_opt": "app_opt",
+}
+
 
 
 
@@ -782,6 +797,7 @@ def _write_train_complete_contract(
     project_root: Path,
     outputs_root: Path,
     config: TrainConfig,
+    effective_cfg: dict,
     img_path: Path,
     colmap_path: Path,
     out_path: Path,
@@ -792,6 +808,12 @@ def _write_train_complete_contract(
     latest_ckpt: Path | None,
 ) -> dict:
     contract_params = {key: getattr(config, key) for key in TRAIN_CONTRACT_PARAM_KEYS}
+    for param_key, effective_key in EFFECTIVE_CONTRACT_PARAM_MAP.items():
+        contract_params[param_key] = effective_cfg[effective_key]
+    # Preserve the wrapper-facing densify_until input, but also expose the
+    # actual trainer refine budget that was applied after preset resolution.
+    if config.train_mode == "mcmc":
+        contract_params["mcmc_refine_stop_iter"] = effective_cfg["refine_stop_iter"]
     contract_params["imgdir"] = str(img_path.resolve())
     contract_params["loss_mask_dir"] = str(loss_mask_path.resolve()) if loss_mask_path is not None else ""
     return write_stage_contract(
@@ -1010,6 +1032,7 @@ def main(
         project_root=project_root,
         outputs_root=outputs_root,
         config=config,
+        effective_cfg=effective_cfg,
         img_path=img_p,
         colmap_path=colmap_p,
         out_path=out_p,
