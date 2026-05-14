@@ -29,6 +29,19 @@
 .PARAMETER DryRun
     僅印出每個 probe 的命令，不實際執行（用於驗證 wrapper diff）
 
+.PARAMETER RetryFailed
+    自動偵測 OutputRoot 下最新 batch 目錄，從 results.csv 找出
+    status=fail（或 exception）的 probe，僅重跑這些 probe 並更新原
+    results.csv 對應 row。配合 -RetryBatchDir 可指定特定 batch。
+
+.PARAMETER Only
+    只跑指定 probe ID 的子集（可以多個，逗號分隔或多參數）。在 tier
+    過濾 + Resume 之後生效，不認得的 ID 會报错。適用於複現 / 補跑。
+
+.PARAMETER RetryBatchDir
+    搭配 -RetryFailed 使用，明確指定要重跑的 batch 目錄絕對路徑。
+    省略時自動取 OutputRoot 下最新的 batch_*。
+
 .PARAMETER OutputRoot
     output 根目錄，預設 outputs/experiments/mcmc_marathon
 
@@ -43,6 +56,18 @@
 .EXAMPLE
     # 全部 dry-run，看會送什麼 CLI
     .\scripts\run_mcmc_marathon.ps1 -DryRun
+
+.EXAMPLE
+    # 重跑最新一輪 batch 中失敗的 probe（自動找 latest batch_*）
+    .\scripts\run_mcmc_marathon.ps1 -Tier S -RetryFailed
+
+.EXAMPLE
+    # 只跑單一 probe（補跑 / 複現）
+    .\scripts\run_mcmc_marathon.ps1 -Tier S -Only 02_aa_full_30k
+
+.EXAMPLE
+    # 只跑多個指定 probe（逗號分隔）
+    .\scripts\run_mcmc_marathon.ps1 -Tier S -Only 01_refine25k_full,02_aa_full_30k
 #>
 
 param(
@@ -50,7 +75,10 @@ param(
     [int]$Resume = 1,
     [string]$ConfigPath = "",
     [switch]$DryRun,
-    [string]$OutputRoot = ""
+    [switch]$RetryFailed,
+    [string[]]$Only = @(),
+    [string]$OutputRoot = "",
+    [string]$RetryBatchDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,11 +132,103 @@ if ($Resume -gt 1) {
     Write-Host "[Resume] 從第 $Resume 個 probe 開始"
 }
 
+# Only 過濾：只保留指定 ID 的 probe（支援逗號分隔或多參數）
+if ($Only -and $Only.Count -gt 0) {
+    # 逗號分隔拆開：-Only "a,b" 與 -Only a,b 都能工作
+    $OnlyIds = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($OnlyIds.Count -eq 0) {
+        throw "-Only 參數為空，請提供至少一個 probe ID。"
+    }
+    $Filtered = @($Probes | Where-Object { $OnlyIds -contains $_.id })
+    $AvailableIds = @($Probes | Select-Object -ExpandProperty id)
+    $Missing = @($OnlyIds | Where-Object { $AvailableIds -notcontains $_ })
+    if ($Missing.Count -gt 0) {
+        throw "-Only 中以下 ID 不在 tier=$Tier 的 configs 中：$($Missing -join ', ')。可用 ID：$($AvailableIds -join ', ')"
+    }
+    if ($Filtered.Count -eq 0) {
+        throw "-Only 過濾後沒有任何 probe。"
+    }
+    Write-Host "[Only] 只跑以下 probe：$($Filtered.id -join ', ')"
+    $Probes = $Filtered
+}
+
+# ── lib_bilagrid pre-check（如有 probe 用 bilateral grid，需先確認可 import）──
+function Test-LibBilagridAvailable {
+    param(
+        [string]$PythonPath,
+        [string]$RepoRoot
+    )
+    if (-not (Test-Path $PythonPath)) {
+        return $false
+    }
+    $RunnerDir = Join-Path $RepoRoot "gsplat_runner"
+    $repoLocal = Join-Path $RunnerDir "lib_bilagrid.py"
+    if (Test-Path $repoLocal) {
+        return $true
+    }
+    $checkScript = 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("lib_bilagrid") else 1)'
+    Push-Location $RunnerDir
+    try {
+        & $PythonPath -c $checkScript 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        Pop-Location
+    }
+}
+
+$NeedsBilagrid = @($Probes | Where-Object { $_.use_bilateral_grid })
+$BilagridAvailable = $true
+if ($NeedsBilagrid.Count -gt 0 -and -not $DryRun) {
+    $BilagridAvailable = Test-LibBilagridAvailable -PythonPath $Python -RepoRoot $Root
+    if (-not $BilagridAvailable) {
+        Write-Host "[bilagrid] lib_bilagrid 在 venv 中找不到。受影響的 probe 將被標記為 skipped（不視為 fail）。" -ForegroundColor Yellow
+        Write-Host "[bilagrid] 安裝指令：" -ForegroundColor Yellow
+        Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/nerfstudio-project/gsplat/main/examples/lib_bilagrid.py' -OutFile '$Root\gsplat_runner\lib_bilagrid.py'" -ForegroundColor Yellow
+    }
+}
+
 # ── batch 目錄 ─────────────────────────────────────
-$BatchTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$BatchDir = Join-Path $OutputRoot "batch_$BatchTimestamp"
-$LogsDir = Join-Path $BatchDir "logs"
-$ResultsCsv = Join-Path $BatchDir "results.csv"
+# RetryFailed 模式：找最新 batch_* dir，讀 results.csv，過濾出 fail probe，沿用同 BatchDir 重寫該 row。
+$ExistingResults = $null
+if ($RetryFailed) {
+    $TargetBatchDir = $RetryBatchDir
+    if (-not $TargetBatchDir) {
+        $candidates = Get-ChildItem -Path $OutputRoot -Directory -Filter "batch_*" -ErrorAction SilentlyContinue |
+                      Sort-Object LastWriteTime -Descending
+        if (-not $candidates -or $candidates.Count -eq 0) {
+            throw "-RetryFailed 找不到任何 batch_* 目錄於 $OutputRoot"
+        }
+        $TargetBatchDir = $candidates[0].FullName
+    }
+    if (-not (Test-Path $TargetBatchDir)) {
+        throw "-RetryFailed 指定的 batch 不存在：$TargetBatchDir"
+    }
+    $BatchDir = $TargetBatchDir
+    $LogsDir = Join-Path $BatchDir "logs"
+    $ResultsCsv = Join-Path $BatchDir "results.csv"
+    if (-not (Test-Path $ResultsCsv)) {
+        throw "-RetryFailed 找不到 results.csv：$ResultsCsv"
+    }
+
+    $ExistingResults = Import-Csv -Path $ResultsCsv -Encoding UTF8
+    $FailedIds = @($ExistingResults | Where-Object { $_.status -in @("fail", "exception") } |
+                   Select-Object -ExpandProperty id)
+    if ($FailedIds.Count -eq 0) {
+        Write-Host "[RetryFailed] $ResultsCsv 中沒有 fail/exception row，無事可做。" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "[RetryFailed] 重跑目錄：$BatchDir"
+    Write-Host "[RetryFailed] 失敗 probe IDs：$($FailedIds -join ', ')"
+    $Probes = @($Probes | Where-Object { $FailedIds -contains $_.id })
+    if ($Probes.Count -eq 0) {
+        throw "-RetryFailed 找到 fail rows，但 configs.json 中沒有對應 ID（可能 configs 已改名）。fail IDs: $($FailedIds -join ', ')"
+    }
+} else {
+    $BatchTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $BatchDir = Join-Path $OutputRoot "batch_$BatchTimestamp"
+    $LogsDir = Join-Path $BatchDir "logs"
+    $ResultsCsv = Join-Path $BatchDir "results.csv"
+}
 
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 
@@ -123,18 +243,24 @@ Write-Host "========================================"
 Write-Host "Config       : $ConfigPath"
 Write-Host "Tier filter  : $(if ($Tier) { $Tier } else { '(all)' })"
 Write-Host "Resume from  : $Resume"
+Write-Host "Retry failed : $RetryFailed"
 Write-Host "Probe count  : $($Probes.Count)"
 Write-Host "Total ETA    : $TotalEta hours"
 Write-Host "ETA finish   : $($EtaFinish.ToString('yyyy-MM-dd HH:mm'))"
 Write-Host "Batch dir    : $BatchDir"
 Write-Host "Results CSV  : $ResultsCsv"
 Write-Host "Dry run      : $DryRun"
+if ($NeedsBilagrid.Count -gt 0) {
+    Write-Host "Bilagrid req : $($NeedsBilagrid.Count) probe，可用=$BilagridAvailable"
+}
 Write-Host "========================================"
 Write-Host ""
 
-# Header for CSV (預先寫好，方便邊跑邊看)
-"id,tier,iterations,start_time,end_time,duration_hours,status,lpips,psnr,ssim,output_dir,log_file,error" |
-    Out-File -FilePath $ResultsCsv -Encoding UTF8
+# CSV header：RetryFailed 模式不重寫 header，沿用原 CSV；其他情況預先寫好。
+if (-not $RetryFailed) {
+    "id,tier,iterations,start_time,end_time,duration_hours,status,lpips,psnr,ssim,output_dir,log_file,error" |
+        Out-File -FilePath $ResultsCsv -Encoding UTF8
+}
 
 # ── 工具函數 ───────────────────────────────────────
 
@@ -169,14 +295,12 @@ function Build-TrainArgs {
     if ($null -ne $Probe.mcmc_refine_stop_iter) {
         $args += @("--mcmc-refine-stop-iter", "$($Probe.mcmc_refine_stop_iter)")
     }
-    if ($null -ne $Probe.mcmc_noise_injection_stop_iter) {
-        $args += @("--mcmc-noise-injection-stop-iter", "$($Probe.mcmc_noise_injection_stop_iter)")
-    }
     if ($null -ne $Probe.ssim_lambda) {
         $args += @("--ssim-lambda", "$($Probe.ssim_lambda)")
     }
     if ($Probe.use_bilateral_grid) { $args += "--use-bilateral-grid" }
     if ($Probe.depth_loss) { $args += "--depth-loss" }
+    # Note: when with_ut is true, train_3dgs.py auto-emits --with-eval3d.
     if ($Probe.with_ut) { $args += "--with-ut" }
 
     if ($Probe.extra_args) {
@@ -255,6 +379,10 @@ foreach ($probe in $Probes) {
     if ($DryRun) {
         Write-Host "[DryRun] 不實際執行"
         $status = "dryrun"
+    } elseif ($probe.use_bilateral_grid -and -not $BilagridAvailable) {
+        $status = "skipped"
+        $errMsg = "lib_bilagrid_unavailable"
+        Write-Host "[skip] $probeId 需要 lib_bilagrid，請依上方指令安裝後重跑。" -ForegroundColor Yellow
     } else {
         try {
             & $Python $RunAndTee --log $probeLog -- @cmd
@@ -292,7 +420,9 @@ foreach ($probe in $Probes) {
     }
     $Results += $row
 
-    # 即時 append（停電也保住前面結果）
+    # 即時持久化 row：
+    # - RetryFailed 模式：把 results.csv 中同 probe id 的舊 fail row 換成新 row（read+rewrite，O(n) 但 csv 通常 <100 row）。
+    # - 一般模式：直接 append（停電也保住前面結果）。
     $line = '{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},"{10}","{11}","{12}"' -f `
         $row.id, $row.tier, $row.iterations, $row.start_time, $row.end_time, `
         $row.duration_hours, $row.status, `
@@ -300,7 +430,16 @@ foreach ($probe in $Probes) {
         $(if ($null -ne $row.psnr) { $row.psnr } else { "" }), `
         $(if ($null -ne $row.ssim) { $row.ssim } else { "" }), `
         $row.output_dir, $row.log_file, $row.error
-    Add-Content -Path $ResultsCsv -Value $line -Encoding UTF8
+    if ($RetryFailed) {
+        $existingLines = Get-Content -Path $ResultsCsv -Encoding UTF8
+        $header = $existingLines[0]
+        $body = @($existingLines | Select-Object -Skip 1 |
+                  Where-Object { -not $_.StartsWith("$($row.id),") })
+        $body += $line
+        @($header) + $body | Out-File -FilePath $ResultsCsv -Encoding UTF8
+    } else {
+        Add-Content -Path $ResultsCsv -Value $line -Encoding UTF8
+    }
 
     Write-Host ""
     Write-Host "[$($end.ToString('HH:mm'))] END $probeId — status=$status, duration=${duration}h, lpips=$($row.lpips)"

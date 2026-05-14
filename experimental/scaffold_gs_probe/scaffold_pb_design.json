@@ -1,0 +1,79 @@
+{
+  "design_name": "scaffold_pb_design_v0_bridge_gated",
+  "status": "blocked_until_bridge",
+  "blocked_reason": "Scaffold-GS current dominant blocker is Scaffold -> Unity bridge/export fidelity, not trainer quality. Do not launch PB marathon until deployment-side scoring is trustworthy.",
+  "created_from": [
+    "outputs/reports/scaffold_knob_inventory.csv",
+    "outputs/reports/scaffold_shortlist.csv",
+    "docs/實驗歷史與決策日誌.md",
+    "專案願景與當前狀態.md"
+  ],
+  "baseline": {
+    "ratio": 5,
+    "resolution": 8,
+    "voxel_size": 0.01,
+    "appearance_dim": 0,
+    "use_feat_bank": false,
+    "lambda_dssim": 0.3,
+    "min_opacity": 0.003,
+    "iterations_probe": 7000,
+    "iterations_full": 30000,
+    "data_device": "cpu"
+  },
+  "bridge_gate": {
+    "must_be_true_before_execution": [
+      "Unity bridge/export path can generate a trustworthy deployment-side score",
+      "Single-view preview failure mode is understood well enough to compare runs",
+      "Deployment-side metric is stable enough to rank at least 3 repeated exports"
+    ],
+    "recheck_knobs_after_gate": [
+      "resolution",
+      "ratio"
+    ]
+  },
+  "phase1_shortlist_after_bridge": [
+    {
+      "knob": "n_offsets",
+      "kind": "architecture",
+      "suggested_levels": [10, 20],
+      "reason": "Increase per-anchor Gaussian capacity"
+    },
+    {
+      "knob": "add_color_dist",
+      "kind": "appearance_prior",
+      "suggested_levels": [false, true],
+      "reason": "Distance-aware color prior for specular metallic behavior"
+    },
+    {
+      "knob": "add_opacity_dist",
+      "kind": "appearance_prior",
+      "suggested_levels": [false, true],
+      "reason": "Distance-aware opacity prior"
+    },
+    {
+      "knob": "add_cov_dist",
+      "kind": "appearance_prior",
+      "suggested_levels": [false, true],
+      "reason": "Distance-aware covariance prior"
+    },
+    {
+      "knob": "ratio",
+      "kind": "full_scene_fair_compare",
+      "suggested_levels": [5, 1],
+      "reason": "Reopen fair anchor-density compare only after bridge gate"
+    },
+    {
+      "knob": "resolution",
+      "kind": "full_scene_fair_compare",
+      "suggested_levels": [8, -1],
+      "reason": "Reopen fair full-resolution compare only after bridge gate"
+    }
+  ],
+  "phase1_execution_shape": {
+    "method": "small_screen_or_PB",
+    "recommended_active_knob_count": 6,
+    "probe_iterations": 7000,
+    "max_initial_runs": 8,
+    "note": "Keep the first post-bridge screen small. Do not jump to 30-logical-knob PB directly."
+  }
+}

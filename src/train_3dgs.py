@@ -75,7 +75,6 @@ DEFAULT_TRAIN_PARAMS = {
     "mcmc_min_opacity": None,
     "mcmc_noise_lr": None,
     "mcmc_refine_stop_iter": None,
-    "mcmc_noise_injection_stop_iter": None,
     "opacity_reg": 0.0,
     "ssim_lambda": None,
     "use_bilateral_grid": False,
@@ -99,7 +98,6 @@ MCMC_PRESET_DEFAULTS = {
     # budget. We now honour the upstream value when the user does not
     # provide an explicit override.
     "refine_stop_iter": 25_000,
-    "noise_injection_stop_iter": -1,  # -1 means never stop noise injection
 }
 
 
@@ -170,7 +168,6 @@ class TrainConfig:
     mcmc_min_opacity: float | None
     mcmc_noise_lr: float | None
     mcmc_refine_stop_iter: int | None
-    mcmc_noise_injection_stop_iter: int | None
     opacity_reg: float
     ssim_lambda: float | None
     use_bilateral_grid: bool
@@ -186,7 +183,7 @@ TRAIN_PARAM_CASTERS = {
     **dict.fromkeys(("train_mode", "imgdir", "colmap", "outdir", "scale_json", "loss_mask_dir"), str),
     **dict.fromkeys(("iterations", "sh_degree", "densify_until", "eval_steps", "data_factor", "cap_max"), int),
     **dict.fromkeys(("scene_scale", "grow_grad2d", "opacity_reg", "ssim_lambda"), float),
-    **dict.fromkeys(("mcmc_refine_stop_iter", "mcmc_noise_injection_stop_iter"), int),
+    **dict.fromkeys(("mcmc_refine_stop_iter",), int),
     **dict.fromkeys(
         (
             "absgrad", "antialiased", "random_bkgd", "pose_opt", "app_opt",
@@ -200,9 +197,24 @@ TRAIN_CONTRACT_PARAM_KEYS = (
     "train_mode", "iterations", "sh_degree", "densify_until", "eval_steps",
     "data_factor", "absgrad", "grow_grad2d", "antialiased", "random_bkgd",
     "cap_max", "opacity_reg", "pose_opt", "app_opt",
-    "mcmc_refine_stop_iter", "mcmc_noise_injection_stop_iter",
+    "mcmc_refine_stop_iter",
     "ssim_lambda", "use_bilateral_grid", "depth_loss", "with_ut",
 )
+
+EFFECTIVE_CONTRACT_PARAM_MAP = {
+    "absgrad": "absgrad",
+    "grow_grad2d": "grow_grad2d",
+    "antialiased": "antialiased",
+    "random_bkgd": "random_bkgd",
+    "cap_max": "cap_max",
+    "opacity_reg": "opacity_reg",
+    "ssim_lambda": "ssim_lambda",
+    "use_bilateral_grid": "use_bilateral_grid",
+    "depth_loss": "depth_loss",
+    "with_ut": "with_ut",
+    "pose_opt": "pose_opt",
+    "app_opt": "app_opt",
+}
 
 
 
@@ -512,7 +524,6 @@ def _resolve_effective_train_config(
     mcmc_min_opacity: float | None,
     mcmc_noise_lr: float | None,
     mcmc_refine_stop_iter: int | None,
-    mcmc_noise_injection_stop_iter: int | None,
     opacity_reg: float,
     ssim_lambda: float | None,
     use_bilateral_grid: bool,
@@ -536,7 +547,6 @@ def _resolve_effective_train_config(
         "refine_stop_iter": densify_until,
         "mcmc_min_opacity": mcmc_min_opacity,
         "mcmc_noise_lr": mcmc_noise_lr,
-        "mcmc_noise_injection_stop_iter": mcmc_noise_injection_stop_iter,
         "opacity_reg": opacity_reg,
         "ssim_lambda": ssim_lambda,
         "use_bilateral_grid": use_bilateral_grid,
@@ -564,8 +574,6 @@ def _resolve_effective_train_config(
             effective["refine_stop_iter"] = mcmc_refine_stop_iter
         elif densify_until == DEFAULT_TRAIN_PARAMS["densify_until"]:
             effective["refine_stop_iter"] = MCMC_PRESET_DEFAULTS["refine_stop_iter"]
-        if mcmc_noise_injection_stop_iter is None:
-            effective["mcmc_noise_injection_stop_iter"] = MCMC_PRESET_DEFAULTS["noise_injection_stop_iter"]
 
     return effective
 
@@ -655,7 +663,6 @@ def _build_trainer_args(
         mcmc_min_opacity=config.mcmc_min_opacity,
         mcmc_noise_lr=config.mcmc_noise_lr,
         mcmc_refine_stop_iter=config.mcmc_refine_stop_iter,
-        mcmc_noise_injection_stop_iter=config.mcmc_noise_injection_stop_iter,
         opacity_reg=config.opacity_reg,
         ssim_lambda=config.ssim_lambda,
         use_bilateral_grid=config.use_bilateral_grid,
@@ -681,17 +688,16 @@ def _build_trainer_args(
         base_args.extend(["--ssim-lambda", str(config.ssim_lambda)])
     _flag(base_args, "--use-bilateral-grid", config.use_bilateral_grid)
     _flag(base_args, "--depth-loss", config.depth_loss)
+    # gsplat upstream couples --with-ut and --with-eval3d via an internal
+    # assertion (Training with UT requires setting `with_eval3d` flag).
+    # Auto-emit both so callers do not have to remember the dependency.
     _flag(base_args, "--with-ut", config.with_ut)
+    _flag(base_args, "--with-eval3d", config.with_ut)
 
     if config.train_mode == "default":
         base_args.extend(["--strategy.grow-grad2d", str(config.grow_grad2d)])
     elif config.train_mode == "mcmc":
         base_args.extend(["--strategy.cap-max", str(config.cap_max)])
-        if config.mcmc_noise_injection_stop_iter is not None:
-            base_args.extend([
-                "--strategy.noise-injection-stop-iter",
-                str(config.mcmc_noise_injection_stop_iter),
-            ])
         if config.mcmc_min_opacity is not None:
             base_args.extend(["--strategy.min-opacity", str(config.mcmc_min_opacity)])
         if config.mcmc_noise_lr is not None:
@@ -791,6 +797,7 @@ def _write_train_complete_contract(
     project_root: Path,
     outputs_root: Path,
     config: TrainConfig,
+    effective_cfg: dict,
     img_path: Path,
     colmap_path: Path,
     out_path: Path,
@@ -801,6 +808,12 @@ def _write_train_complete_contract(
     latest_ckpt: Path | None,
 ) -> dict:
     contract_params = {key: getattr(config, key) for key in TRAIN_CONTRACT_PARAM_KEYS}
+    for param_key, effective_key in EFFECTIVE_CONTRACT_PARAM_MAP.items():
+        contract_params[param_key] = effective_cfg[effective_key]
+    # Preserve the wrapper-facing densify_until input, but also expose the
+    # actual trainer refine budget that was applied after preset resolution.
+    if config.train_mode == "mcmc":
+        contract_params["mcmc_refine_stop_iter"] = effective_cfg["refine_stop_iter"]
     contract_params["imgdir"] = str(img_path.resolve())
     contract_params["loss_mask_dir"] = str(loss_mask_path.resolve()) if loss_mask_path is not None else ""
     return write_stage_contract(
@@ -865,7 +878,6 @@ def main(
     mcmc_min_opacity: float | None = typer.Option(None,        help="MCMCStrategy 的 min_opacity；未提供時使用 gsplat preset 預設值"),
     mcmc_noise_lr: float | None = typer.Option(None,           help="MCMCStrategy 的 noise_lr；未提供時使用 gsplat preset 預設值"),
     mcmc_refine_stop_iter: int | None = typer.Option(None,     help="MCMCStrategy 的 refine_stop_iter；未提供時 mcmc 會使用 25000（gsplat 官方），default 會使用 densify_until"),
-    mcmc_noise_injection_stop_iter: int | None = typer.Option(None, help="MCMCStrategy 的 noise_injection_stop_iter；-1=永不停。提早停止可減低 Unity 視覺霧化"),
     opacity_reg:  float = typer.Option(0.0,                    help="透明度正則化；抑制半透明浮點/浮球"),
     ssim_lambda:  float | None = typer.Option(None,            help="DSSIM 損失權重（gsplat 預設 0.2）；提高可強化結構保真"),
     use_bilateral_grid: bool = typer.Option(False,             help="啟用 bilateral grid 校正影像曝光不一致 / rolling shutter"),
@@ -1020,6 +1032,7 @@ def main(
         project_root=project_root,
         outputs_root=outputs_root,
         config=config,
+        effective_cfg=effective_cfg,
         img_path=img_p,
         colmap_path=colmap_p,
         out_path=out_p,
