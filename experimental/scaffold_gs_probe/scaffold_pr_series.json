@@ -1,0 +1,79 @@
+{
+  "series_name": "scaffold_gs_pr_series_v1",
+  "scope": "sandbox_only",
+  "notes": [
+    "This PR series is for Scaffold-GS sandbox work only.",
+    "Do not promote these changes to production defaults without formal docs and benchmark review.",
+    "The default mode prepares PR drafts only. Branch creation is opt-in."
+  ],
+  "pull_requests": [
+    {
+      "pr_id": "scaffold-bridge-first",
+      "order": 1,
+      "branch_name": "scaffold/bridge-first",
+      "title": "Scaffold-GS bridge-first checklist, schema, and probe runner",
+      "commit_subject": "feat(scaffold): add bridge-first checklist and probe runner",
+      "summary": [
+        "Add deployment-side bridge checklist.",
+        "Add machine-readable bridge score schema.",
+        "Add Scaffold bridge probe runner for export and Unity import verification."
+      ],
+      "files": [
+        "experimental/scaffold_gs_probe/bridge_checklist.md",
+        "experimental/scaffold_gs_probe/bridge_score_schema.json",
+        "scripts/run_scaffold_bridge_probe.ps1"
+      ],
+      "verify_commands": [
+        "pwsh -File scripts/run_scaffold_bridge_probe.ps1 -ModelPath <scaffold_model_path> -UnityProject <unity_project_path>"
+      ],
+      "depends_on": []
+    },
+    {
+      "pr_id": "scaffold-density-diagnostics",
+      "order": 2,
+      "branch_name": "scaffold/density-diagnostics",
+      "title": "Scaffold-GS density split and ladder diagnostics",
+      "commit_subject": "feat(scaffold): add density split and ladder diagnostics",
+      "summary": [
+        "Add split probe runner to isolate density vs appearance.",
+        "Add density ladder runner for controlled coverage tests.",
+        "Patch sandbox stdout flush and port handling to stabilize Windows runs."
+      ],
+      "files": [
+        "scripts/run_scaffold_gs_probe_windows.ps1",
+        "scripts/run_scaffold_gs_split_probe.ps1",
+        "scripts/run_scaffold_density_ladder.ps1",
+        "experimental/scaffold_gs_probe/repo/Scaffold-GS/utils/general_utils.py"
+      ],
+      "verify_commands": [
+        "pwsh -File scripts/run_scaffold_gs_split_probe.ps1 -Mode density_only",
+        "pwsh -File scripts/run_scaffold_density_ladder.ps1 -Step step1_ratio1_res8_v0010"
+      ],
+      "depends_on": [
+        "scaffold-bridge-first"
+      ]
+    },
+    {
+      "pr_id": "scaffold-shortlist-and-pb-gate",
+      "order": 3,
+      "branch_name": "scaffold/shortlist-and-pb-gate",
+      "title": "Scaffold-GS shortlist and bridge-gated PB design",
+      "commit_subject": "docs(scaffold): add shortlist and bridge-gated PB design",
+      "summary": [
+        "Freeze current Scaffold sandbox baseline.",
+        "Mark bridge-blocked knobs vs post-bridge candidates.",
+        "Add bridge-gated PB design instead of launching a large screen immediately."
+      ],
+      "files": [
+        "experimental/scaffold_gs_probe/scaffold_shortlist.csv",
+        "experimental/scaffold_gs_probe/scaffold_pb_design.json"
+      ],
+      "verify_commands": [
+        "Inspect scaffold_shortlist.csv and scaffold_pb_design.json for bridge-gated knob policy."
+      ],
+      "depends_on": [
+        "scaffold-density-diagnostics"
+      ]
+    }
+  ]
+}

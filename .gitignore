@@ -20,3 +20,7 @@ _tmp*
 Thumbs.db
 Desktop.ini
 .env
+
+# Scaffold-GS generated status / drafts
+experimental/scaffold_gs_probe/latest_teacher_loop_status.json
+experimental/scaffold_gs_probe/pr_drafts/
