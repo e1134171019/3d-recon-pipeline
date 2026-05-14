@@ -126,7 +126,7 @@ if ($WatchRunRoot) {
 }
 
 & $PythonExe $buildScript --manifest $Manifest --outputs-root $OutputsRoot --output $SeedOutput
-& $PythonExe $labelScript --input $SeedOutput --output $TeacherOutput --model $Model --base-url $BaseUrl
+& $PythonExe $labelScript --input $SeedOutput --output $TeacherOutput --model $Model --base-url $BaseUrl --refresh-null-scaffold
 
 if (-not (Test-Path -LiteralPath $HistoricalTeacher)) {
     Write-Host "[WARN] Historical teacher dataset not found: $HistoricalTeacher"

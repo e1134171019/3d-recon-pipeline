@@ -202,6 +202,28 @@ def _apply_export_filters(
     return means, scales, quats, opacities, sh0, shN, metadata
 
 
+def _apply_unity_sh_handedness(shN: np.ndarray) -> np.ndarray:
+    """
+    Flip the Y-odd SH bands after COLMAP Y-down -> Unity Y-up conversion.
+
+    gsplat stores higher-order coefficients in the same order produced by
+    `_eval_sh_bases_fast`, excluding the DC term kept in `sh0`.
+    For degree-3 (`K=15`), the Y-odd full-basis indices are:
+      1, 4, 5, 9, 10, 11
+    Since `shN` excludes DC index 0, the corresponding `shN` indices are:
+      0, 3, 4, 8, 9, 10
+    """
+    if shN.ndim != 3 or shN.shape[1] == 0:
+        return shN
+
+    y_odd_indices = (0, 3, 4, 8, 9, 10)
+    out = shN.copy()
+    for idx in y_odd_indices:
+        if idx < out.shape[1]:
+            out[:, idx, :] = -out[:, idx, :]
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="gsplat checkpoint → Unity .ply")
     parser.add_argument(
@@ -337,10 +359,9 @@ def main():
         quats[:, 3] = -quats[:, 3]
         
         # 3. Scale 維持不變（因為是取絕對值的 scale）
-        # 4. Spherical Harmonics 係數：
-        #    由於 Y 方向反轉，所有 Y 奇數次方的 SH 係數需要加負號。
-        #    DC (sh0) 沒差，但在嚴格的實作中 shN 的 Y dependent bands 要反轉。
-        #    目前 3DGS-Unity 通常會忽略 SH 旋轉或只用顏色，為避免更複雜錯誤，先不動 SH。
+        # 4. Higher-order SH bands:
+        #    y -> -y flips all Y-odd bases. DC (sh0) is unchanged.
+        shN = _apply_unity_sh_handedness(shN)
 
     means, scales, quats, opacities, sh0, shN, filter_meta = _apply_export_filters(
         means,

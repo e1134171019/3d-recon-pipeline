@@ -45,6 +45,24 @@ class ExportHelpersTests(unittest.TestCase):
         np.testing.assert_allclose(out_quats, quats, atol=1e-6)
         np.testing.assert_allclose(out_scales, scales, atol=1e-6)
 
+    def test_apply_unity_sh_handedness_flips_y_odd_bands_only(self):
+        shN = np.arange(1, 1 + 15 * 3, dtype=np.float32).reshape(1, 15, 3)
+        out = export_ply_unity._apply_unity_sh_handedness(shN)
+
+        flipped = {0, 3, 4, 8, 9, 10}
+        for idx in range(15):
+            if idx in flipped:
+                np.testing.assert_allclose(out[:, idx, :], -shN[:, idx, :])
+            else:
+                np.testing.assert_allclose(out[:, idx, :], shN[:, idx, :])
+
+    def test_apply_unity_sh_handedness_truncates_safely(self):
+        shN = np.ones((2, 4, 3), dtype=np.float32)
+        out = export_ply_unity._apply_unity_sh_handedness(shN)
+        np.testing.assert_allclose(out[:, 0, :], -1.0)
+        np.testing.assert_allclose(out[:, 1:3, :], 1.0)
+        np.testing.assert_allclose(out[:, 3, :], -1.0)
+
     def test_write_ply_unity_creates_binary_ply(self):
         with workspace_tempdir("export_unity_") as tmp:
             out_path = tmp / "unity.ply"

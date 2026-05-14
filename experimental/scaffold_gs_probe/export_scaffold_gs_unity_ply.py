@@ -1,9 +1,9 @@
-"""Export a Scaffold-GS checkpoint as an approximate Unity-compatible PLY.
+"""Export a Scaffold-GS checkpoint as a Unity-compatible preview PLY.
 
 Scaffold-GS stores anchors, offsets, and MLP weights. UnityGaussianSplatting
 expects explicit INRIA-style Gaussian splats. This sandbox utility expands the
-neural Gaussians for one reference camera and writes a preview PLY that can be
-used to test Unity import compatibility.
+neural Gaussians for one reference camera and writes a *single-camera preview*
+PLY that can be used to test Unity import compatibility.
 """
 
 from __future__ import annotations
@@ -188,8 +188,11 @@ def main() -> None:
     report = {
         "source_model_path": dataset.model_path,
         "loaded_iteration": int(scene.loaded_iter),
+        "export_mode": "single_camera_preview",
+        "complete_scene": False,
         "camera_set": args.camera_set,
         "camera_index": int(args.camera_index),
+        "camera_uid": int(camera.uid),
         "candidate_splats": int(opacity_np.shape[0]),
         "exported_splats": int(keep.sum()),
         "min_opacity": float(args.min_opacity),
