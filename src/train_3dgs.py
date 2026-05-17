@@ -42,6 +42,7 @@ Output:
 
 import subprocess, json, shutil
 from pathlib import Path
+import cv2
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -441,7 +442,62 @@ def _create_directory_link(link_path: Path, target_path: Path) -> None:
         )
 
 
-def _ensure_scene_dir(scene_dir: Path, img_target: Path, sparse_target: Path) -> None:
+def _prepare_factor_image_cache(img_target: Path, factor: int) -> Path:
+    """Create or reuse a sibling downsample cache for gsplat's images_<factor> lookup."""
+    if factor <= 1:
+        raise ValueError("factor cache is only valid for factors > 1")
+
+    cache_dir = img_target.parent / f"{img_target.name}_{factor}"
+    src_files = sorted(
+        path for path in img_target.iterdir()
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+    )
+    if not src_files:
+        raise FileNotFoundError(f"找不到可用影格：{img_target}")
+
+    if cache_dir.exists():
+        cached_files = sorted(
+            path for path in cache_dir.iterdir()
+            if path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        )
+        if len(cached_files) == len(src_files):
+            console.print(f"[cyan]重用 downsample cache[/] {cache_dir.resolve()}")
+            return cache_dir
+        _remove_path(cache_dir)
+
+    console.print(
+        f"[yellow]Building images_{factor} cache[/] "
+        f"{img_target.resolve()} -> {cache_dir.resolve()}"
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for src_file in src_files:
+        image = cv2.imread(str(src_file), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise RuntimeError(f"無法讀取影格：{src_file}")
+
+        height, width = image.shape[:2]
+        resized = cv2.resize(
+            image,
+            (max(1, width // factor), max(1, height // factor)),
+            interpolation=cv2.INTER_AREA,
+        )
+        out_file = cache_dir / src_file.name
+        if out_file.suffix.lower() in {".jpg", ".jpeg"}:
+            cv2.imwrite(str(out_file), resized, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        elif out_file.suffix.lower() == ".png":
+            cv2.imwrite(str(out_file), resized, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        else:
+            cv2.imwrite(str(out_file), resized)
+
+    return cache_dir
+
+
+def _ensure_scene_dir(
+    scene_dir: Path,
+    img_target: Path,
+    sparse_target: Path,
+    data_factor: int,
+) -> None:
     """Build a per-run colmap scene directory to avoid cross-run contamination."""
     images_link = scene_dir / "images"
     sparse_link = scene_dir / "sparse" / "0"
@@ -454,6 +510,9 @@ def _ensure_scene_dir(scene_dir: Path, img_target: Path, sparse_target: Path) ->
 
     _create_directory_link(images_link, img_target)
     _create_directory_link(sparse_link, sparse_target)
+    if data_factor > 1:
+        factor_cache = _prepare_factor_image_cache(img_target, data_factor)
+        _create_directory_link(scene_dir / f"images_{data_factor}", factor_cache)
 
 
 def _load_train_params(params_json: str) -> tuple[dict, dict]:
@@ -967,7 +1026,7 @@ def main(
     img_target = img_p.resolve()
     sparse_target = colmap_p.resolve()
     console.print("[yellow]Building isolated colmap scene directory for this run...[/]")
-    _ensure_scene_dir(scene_dir, img_target, sparse_target)
+    _ensure_scene_dir(scene_dir, img_target, sparse_target, config.data_factor)
     console.print(f"  images -> {img_target}")
     console.print(f"  sparse/0 -> {sparse_target}")
 

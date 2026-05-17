@@ -6,6 +6,9 @@ param(
     [ValidateSet("test", "train")]
     [string]$CameraSet = "test",
     [int]$CameraIndex = 0,
+    [ValidateSet("same", "test", "train")]
+    [string]$AvgCameraSet = "train",
+    [int]$AvgCameraCount = 20,
     [int]$MaxSplats = 300000,
     [double]$MinOpacity = 0.0,
     [string]$AssetBaseName = "",
@@ -53,7 +56,8 @@ $unityAssetPath = ""
 
 Write-Host "=== Scaffold Bridge Probe ==="
 Write-Host "Model Path    : $modelPathResolved"
-Write-Host "Camera        : $CameraSet / $CameraIndex"
+Write-Host "Reference Cam : $CameraSet / $CameraIndex"
+Write-Host "Average Cams  : $AvgCameraSet / $AvgCameraCount"
 Write-Host "Output PLY    : $outputPly"
 Write-Host "Export Report : $exportReport"
 Write-Host "Bridge Score  : $bridgeScore"
@@ -68,6 +72,8 @@ $exportArgs = @(
     "--iteration", $Iteration,
     "--camera-set", $CameraSet,
     "--camera-index", $CameraIndex,
+    "--avg-camera-set", $AvgCameraSet,
+    "--avg-camera-count", $AvgCameraCount,
     "--max-splats", $MaxSplats,
     "--min-opacity", $MinOpacity,
     "--report-output", $exportReport,
