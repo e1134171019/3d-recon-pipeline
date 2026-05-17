@@ -4,6 +4,7 @@ param(
     [string]$SceneName = "u_base_750k_aa",
     [string]$ExperimentName = "probe_win_20260507",
     [string]$Gpu = "0",
+    [int]$Port = 6009,
     [int]$Iterations = 7000,
     [double]$VoxelSize = 0.001,
     [int]$UpdateInitFactor = 16,
@@ -48,6 +49,7 @@ Write-Host "DSSIM:  $LambdaDssim"
 Write-Host "MinOp:  $MinOpacity"
 Write-Host "FeatBk: $($UseFeatBank.IsPresent)"
 Write-Host "Data:   $DataDevice"
+Write-Host "Port:   $Port"
 
 Push-Location $repoRoot
 try {
@@ -65,6 +67,7 @@ try {
         "--lambda_dssim", $LambdaDssim,
         "--min_opacity", $MinOpacity,
         "--data_device", $DataDevice,
+        "--port", $Port,
         "--iterations", $Iterations,
         "-m", $outputRoot
     )

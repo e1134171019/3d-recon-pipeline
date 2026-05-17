@@ -14,8 +14,11 @@
     "data_device": "cpu"
   },
   "export": {
+    "export_mode": "single_camera_preview",
+    "complete_scene": false,
     "camera_set": "test",
     "camera_index": 0,
+    "camera_uid": null,
     "candidate_splats": null,
     "exported_splats": null,
     "min_opacity": 0.0,

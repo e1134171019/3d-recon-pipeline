@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import subprocess
+import types
 import unittest
 import builtins
 from pathlib import Path
@@ -197,6 +198,32 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertEqual(stats["images_count"], 2)
         self.assertEqual(stats["points3d_count"], 10)
         self.assertTrue(warnings)
+
+    def test_read_sparse_model_stats_supports_pycolmap_method_and_attribute_counts(self):
+        class FakeReconstruction:
+            def __init__(self, _path):
+                self.cameras = {1: object(), 2: object()}
+                self.images = {1: object(), 2: object(), 3: object(), 4: object(), 5: object()}
+                self.points3D = {1: object(), 2: object(), 3: object(), 4: object()}
+                self.num_images = 5
+
+            def num_reg_images(self):
+                return 4
+
+        fake_pycolmap = types.SimpleNamespace(Reconstruction=FakeReconstruction)
+
+        with workspace_tempdir("sfm_sparse_pycolmap_") as tmp, mock.patch.dict(
+            "sys.modules", {"pycolmap": fake_pycolmap}
+        ):
+            sparse = tmp / "0"
+            sparse.mkdir()
+            stats, warnings = sfm_colmap._read_sparse_model_stats(sparse)
+
+        self.assertEqual(stats["cameras_count"], 2)
+        self.assertEqual(stats["images_count"], 5)
+        self.assertEqual(stats["registered_images_count"], 4)
+        self.assertEqual(stats["points3d_count"], 4)
+        self.assertEqual(warnings, [])
 
     def test_find_best_sparse_model_prefers_more_registered_images_then_points(self):
         with workspace_tempdir("sfm_sparse_best_") as tmp:

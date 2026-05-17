@@ -419,16 +419,33 @@ def _read_sparse_model_stats(sparse_path: Path) -> tuple[dict, list[str]]:
         import pycolmap
 
         reconstruction = pycolmap.Reconstruction(str(sparse_path))
-        stats["cameras_count"] = int(getattr(reconstruction, "num_cameras", lambda: len(reconstruction.cameras))())
-        if hasattr(reconstruction, "num_images"):
-            stats["images_count"] = int(reconstruction.num_images())
-        else:
-            stats["images_count"] = len(reconstruction.images)
-        if hasattr(reconstruction, "num_reg_images"):
-            stats["registered_images_count"] = int(reconstruction.num_reg_images())
-        else:
+
+        def read_count(attr_name: str) -> int:
+            value = getattr(reconstruction, attr_name)
+            return int(value() if callable(value) else value)
+
+        def read_len(attr_name: str) -> int:
+            return int(len(getattr(reconstruction, attr_name)))
+
+        try:
+            stats["cameras_count"] = read_count("num_cameras")
+        except AttributeError:
+            stats["cameras_count"] = read_len("cameras")
+
+        try:
+            stats["images_count"] = read_count("num_images")
+        except AttributeError:
+            stats["images_count"] = read_len("images")
+
+        try:
+            stats["registered_images_count"] = read_count("num_reg_images")
+        except AttributeError:
             stats["registered_images_count"] = stats["images_count"]
-        stats["points3d_count"] = int(getattr(reconstruction, "num_points3D", lambda: len(reconstruction.points3D))())
+
+        try:
+            stats["points3d_count"] = read_count("num_points3D")
+        except AttributeError:
+            stats["points3d_count"] = read_len("points3D")
         return stats, warnings
     except Exception as exc:
         warnings.append(f"pycolmap read failed, falling back to file-size estimation: {exc}")

@@ -6,6 +6,9 @@ param(
     [ValidateSet("test", "train")]
     [string]$CameraSet = "test",
     [int]$CameraIndex = 0,
+    [ValidateSet("same", "test", "train")]
+    [string]$AvgCameraSet = "train",
+    [int]$AvgCameraCount = 20,
     [int]$MaxSplats = 300000,
     [double]$MinOpacity = 0.0,
     [string]$AssetBaseName = "",
@@ -53,7 +56,8 @@ $unityAssetPath = ""
 
 Write-Host "=== Scaffold Bridge Probe ==="
 Write-Host "Model Path    : $modelPathResolved"
-Write-Host "Camera        : $CameraSet / $CameraIndex"
+Write-Host "Reference Cam : $CameraSet / $CameraIndex"
+Write-Host "Average Cams  : $AvgCameraSet / $AvgCameraCount"
 Write-Host "Output PLY    : $outputPly"
 Write-Host "Export Report : $exportReport"
 Write-Host "Bridge Score  : $bridgeScore"
@@ -68,6 +72,8 @@ $exportArgs = @(
     "--iteration", $Iteration,
     "--camera-set", $CameraSet,
     "--camera-index", $CameraIndex,
+    "--avg-camera-set", $AvgCameraSet,
+    "--avg-camera-count", $AvgCameraCount,
     "--max-splats", $MaxSplats,
     "--min-opacity", $MinOpacity,
     "--report-output", $exportReport,
@@ -96,8 +102,11 @@ catch {
 $template = Get-Content -LiteralPath $schemaPath -Raw | ConvertFrom-Json
 $template.source_run = $modelPathResolved
 $template.iteration = $Iteration
+$template.export.export_mode = "single_camera_preview"
+$template.export.complete_scene = $false
 $template.export.camera_set = $CameraSet
 $template.export.camera_index = $CameraIndex
+$template.export.camera_uid = $null
 $template.export.min_opacity = $MinOpacity
 $template.export.max_splats = $MaxSplats
 $template.export.output_ply = $outputPly
@@ -107,8 +116,17 @@ $template.export.export_error = $exportError
 
 if ($exportOk -and (Test-Path -LiteralPath $exportReport)) {
     $exportData = Get-Content -LiteralPath $exportReport -Raw | ConvertFrom-Json
+    if ($exportData.PSObject.Properties.Name -contains 'export_mode') {
+        $template.export.export_mode = $exportData.export_mode
+    }
+    if ($exportData.PSObject.Properties.Name -contains 'complete_scene') {
+        $template.export.complete_scene = [bool]$exportData.complete_scene
+    }
     $template.export.candidate_splats = $exportData.candidate_splats
     $template.export.exported_splats = $exportData.exported_splats
+    if ($exportData.PSObject.Properties.Name -contains 'camera_uid') {
+        $template.export.camera_uid = $exportData.camera_uid
+    }
     $template.export.output_size_mb = $exportData.output_size_mb
     $template.export.export_ok = [bool](Test-Path -LiteralPath $outputPly)
 }
@@ -144,7 +162,12 @@ $template.unity_import.import_error = $importError
 $template.gate.import_gate_pass = $importOk
 
 if ($template.gate.export_gate_pass -and $template.gate.import_gate_pass) {
-    $template.gate.reason = "Awaiting deployment-side visual review"
+    if (-not [bool]$template.export.complete_scene) {
+        $template.gate.reason = "Preview export imported successfully, but this is not a complete-scene deployment artifact"
+    }
+    else {
+        $template.gate.reason = "Awaiting deployment-side visual review"
+    }
 }
 elseif (-not $template.gate.export_gate_pass) {
     $template.gate.reason = if ($exportError) { "Export failed: $exportError" } else { "Export failed" }
