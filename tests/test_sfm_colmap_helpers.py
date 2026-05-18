@@ -158,6 +158,66 @@ class SfmColmapHelpersTests(unittest.TestCase):
                     work_p=work_p,
                 )
 
+    def test_run_stereo_fusion_step_prepares_workspace_before_stereo(self):
+        with workspace_tempdir("sfm_dense_prepare_") as tmp:
+            img = tmp / "images"
+            sparse_model = tmp / "sparse" / "0"
+            work_p = tmp / "work"
+            img.mkdir(parents=True)
+            sparse_model.mkdir(parents=True)
+            dense_root = work_p / "dense"
+
+            def fake_run(cmd):
+                if cmd[1] == "image_undistorter":
+                    (dense_root / "images").mkdir(parents=True, exist_ok=True)
+                    (dense_root / "sparse").mkdir(parents=True, exist_ok=True)
+                elif cmd[1] == "stereo_fusion":
+                    (dense_root / "fused.ply").write_bytes(b"ply")
+
+            with mock.patch.object(sfm_colmap, "run", side_effect=fake_run) as mocked_run:
+                fused = sfm_colmap._run_stereo_fusion_step(
+                    colmap_exe="colmap.exe",
+                    img=img,
+                    sparse_model=sparse_model,
+                    work_p=work_p,
+                    enable_fusion=True,
+                )
+
+            self.assertEqual(fused, dense_root / "fused.ply")
+            self.assertEqual(mocked_run.call_count, 3)
+            self.assertEqual(mocked_run.call_args_list[0].args[0][0:2], ["colmap.exe", "image_undistorter"])
+            self.assertEqual(mocked_run.call_args_list[1].args[0][0:2], ["colmap.exe", "patch_match_stereo"])
+            self.assertEqual(mocked_run.call_args_list[2].args[0][0:2], ["colmap.exe", "stereo_fusion"])
+
+    def test_run_stereo_fusion_step_reuses_existing_workspace(self):
+        with workspace_tempdir("sfm_dense_reuse_") as tmp:
+            img = tmp / "images"
+            sparse_model = tmp / "sparse" / "0"
+            work_p = tmp / "work"
+            dense_root = work_p / "dense"
+            img.mkdir(parents=True)
+            sparse_model.mkdir(parents=True)
+            (dense_root / "images").mkdir(parents=True)
+            (dense_root / "sparse").mkdir(parents=True)
+
+            def fake_run(cmd):
+                if cmd[1] == "stereo_fusion":
+                    (dense_root / "fused.ply").write_bytes(b"ply")
+
+            with mock.patch.object(sfm_colmap, "run", side_effect=fake_run) as mocked_run:
+                fused = sfm_colmap._run_stereo_fusion_step(
+                    colmap_exe="colmap.exe",
+                    img=img,
+                    sparse_model=sparse_model,
+                    work_p=work_p,
+                    enable_fusion=True,
+                )
+
+            self.assertEqual(fused, dense_root / "fused.ply")
+            self.assertEqual(mocked_run.call_count, 2)
+            self.assertEqual(mocked_run.call_args_list[0].args[0][0:2], ["colmap.exe", "patch_match_stereo"])
+            self.assertEqual(mocked_run.call_args_list[1].args[0][0:2], ["colmap.exe", "stereo_fusion"])
+
     def test_infer_outputs_root(self):
         project_root = Path(r"C:\project")
         work_dir = project_root / "outputs" / "runs" / "r1" / "SfM_models" / "sift"

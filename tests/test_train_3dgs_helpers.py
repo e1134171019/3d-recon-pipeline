@@ -85,6 +85,20 @@ class Train3DGSHelpersTests(unittest.TestCase):
             self.assertEqual(plan["recommended_params"]["iterations"], 40000)
             self.assertEqual(recommended["grow_grad2d"], 0.0008)
 
+    def test_apply_recommended_train_params_casts_mcmc_float_overrides(self):
+        cfg = train_3dgs.TrainConfig(**dict(train_3dgs.DEFAULT_TRAIN_PARAMS))
+        updated = train_3dgs._apply_recommended_train_params(
+            cfg,
+            {
+                "mcmc_min_opacity": "0.02",
+                "mcmc_noise_lr": "1234.0",
+            },
+        )
+        self.assertEqual(updated.mcmc_min_opacity, 0.02)
+        self.assertEqual(updated.mcmc_noise_lr, 1234.0)
+        self.assertIsInstance(updated.mcmc_min_opacity, float)
+        self.assertIsInstance(updated.mcmc_noise_lr, float)
+
     def test_read_json_robust_supports_utf8_sig(self):
         with workspace_tempdir("train_json_") as tmp:
             payload_path = tmp / "payload.json"
@@ -377,17 +391,23 @@ class Train3DGSHelpersTests(unittest.TestCase):
             sparse_target = tmp / "sparse_src"
             img_target.mkdir()
             sparse_target.mkdir()
+            factor_cache = tmp / "images_cache_2"
+            factor_cache.mkdir()
 
             with mock.patch.object(train_3dgs, "_remove_path") as mocked_remove, mock.patch.object(
                 train_3dgs, "_create_directory_link"
-            ) as mocked_link:
-                train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target)
+            ) as mocked_link, mock.patch.object(
+                train_3dgs, "_prepare_factor_image_cache", return_value=factor_cache
+            ) as mocked_prepare:
+                train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target, 2)
 
             self.assertTrue((scene_dir / "sparse").exists())
             mocked_remove.assert_not_called()
-            self.assertEqual(mocked_link.call_count, 2)
+            mocked_prepare.assert_called_once_with(img_target, 2)
+            self.assertEqual(mocked_link.call_count, 3)
             mocked_link.assert_any_call(scene_dir / "images", img_target)
             mocked_link.assert_any_call(scene_dir / "sparse" / "0", sparse_target)
+            mocked_link.assert_any_call(scene_dir / "images_2", factor_cache)
 
     def test_ensure_scene_dir_removes_existing_scene_dir(self):
         with workspace_tempdir("train_scene_dir_existing_") as tmp:
@@ -401,7 +421,7 @@ class Train3DGSHelpersTests(unittest.TestCase):
             with mock.patch.object(train_3dgs, "_remove_path") as mocked_remove, mock.patch.object(
                 train_3dgs, "_create_directory_link"
             ):
-                train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target)
+                train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target, 1)
 
             mocked_remove.assert_called_once_with(scene_dir)
 
@@ -798,7 +818,11 @@ class Train3DGSHelpersTests(unittest.TestCase):
                     },
                 ), mock.patch.object(
                     train_3dgs, "trigger_decision_layer", return_value=result
-                ) as mocked_decision, mock.patch.object(train_3dgs.console, "print"):
+                ) as mocked_decision, mock.patch.object(
+                    train_3dgs,
+                    "write_decision_hook_audit",
+                    return_value=str(tmp / "agent_train_complete_decision_hook.json"),
+                ) as mocked_audit, mock.patch.object(train_3dgs.console, "print"):
                     train_3dgs.main(
                         **self._main_kwargs(
                             imgdir=str(imgdir),
@@ -808,6 +832,7 @@ class Train3DGSHelpersTests(unittest.TestCase):
                         )
                     )
                 mocked_decision.assert_called_once()
+                mocked_audit.assert_called_once()
 
 
 class BuildTrainerArgsMcmcKnobsTests(unittest.TestCase):

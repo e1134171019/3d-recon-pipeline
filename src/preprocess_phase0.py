@@ -13,6 +13,15 @@ from tqdm import tqdm
 import json
 from datetime import datetime
 
+
+def _require_phase0_pass(stats: dict, key: str, label: str) -> bool:
+    """Return whether a Phase 0 sub-stage reported PASS."""
+    stage_stats = stats.get(key) or {}
+    if stage_stats.get("status") != "PASS":
+        print(f"❌ {label} 失敗: status={stage_stats.get('status', 'UNKNOWN')}")
+        return False
+    return True
+
 def get_video_path():
     """Locate video file in data/viode directory"""
     data_dir = Path("data/viode")
@@ -315,11 +324,11 @@ def preprocess_phase0(video_path, output_dir="data/frames_cleaned", fps=1,
     
     return stats
 
-if __name__ == "__main__":
+def run_phase0_cli() -> int:
     # Find video
     video_path = get_video_path()
     if not video_path:
-        sys.exit(1)
+        return 1
     
     # Step 1-2: Run preprocessing with fps=1 (extract all frames)
     stats = preprocess_phase0(
@@ -332,7 +341,12 @@ if __name__ == "__main__":
     
     if not stats or stats["accepted_frames"] <= 0:
         print(f"❌ Step 1-2 失敗: 未提取到任何有效幀")
-        sys.exit(1)
+        return 1
+
+    if not _require_phase0_pass(stats, "extraction_stats", "Step 1 提取"):
+        return 1
+    if not _require_phase0_pass(stats, "filtering_stats", "Step 2 過濾"):
+        return 1
     
     print(f"✅ Step 1-2 成功: {stats['accepted_frames']} 張有效幀")
     
@@ -345,7 +359,7 @@ if __name__ == "__main__":
     
     if val_stats["sampled_frames"] <= 0:
         print(f"❌ Step 3 失敗: 未采样到任何驗證幀")
-        sys.exit(1)
+        return 1
     
     # Save Step 3 statistics
     val_path = Path("data/frames_val")
@@ -353,6 +367,10 @@ if __name__ == "__main__":
     val_stats_file = val_path / "validation_stats.json"
     with open(val_stats_file, "w") as f:
         json.dump(val_stats, f, indent=2)
+
+    if val_stats["status"] != "PASS":
+        print(f"❌ Step 3 失敗: 驗證集不足，status={val_stats['status']}")
+        return 1
     
     print(f"✅ Step 3 完成: {val_stats['sampled_frames']} 張驗證幀")
     print(f"  ✓ 検查: 驗證集 ≥ 50 ? {val_stats['status']}")
@@ -374,3 +392,8 @@ if __name__ == "__main__":
     print(f"      ├─ filtering_stats.json (Step 2)")
     print(f"      └─ validation_stats.json (Step 3)")
     print(f"{'='*70}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_phase0_cli())

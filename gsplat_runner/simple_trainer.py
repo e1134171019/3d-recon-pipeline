@@ -2,6 +2,7 @@ import json
 import math
 import os
 import time
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,8 +50,13 @@ def _patch_windows_cpp_extension_decode() -> None:
         # this can fail before the compiler version regex is parsed, so we force
         # a tolerant UTF-8 decode path for subprocess output.
         cpp_extension.SUBPROCESS_DECODE_ARGS = ("utf-8", "replace")
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(
+            "Failed to patch torch Windows JIT subprocess decode path; "
+            f"compiler probe output may still use the OEM code page ({exc.__class__.__name__}: {exc})",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 _patch_windows_cpp_extension_decode()

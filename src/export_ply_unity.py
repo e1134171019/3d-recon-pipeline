@@ -19,10 +19,48 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from src.utils.agent_contracts import infer_outputs_root, trigger_decision_layer, write_stage_contract
+from src.utils.agent_contracts import (
+    infer_outputs_root,
+    trigger_decision_layer,
+    write_decision_hook_audit,
+    write_stage_contract,
+)
 
 
 # ─── Quaternion helpers (wxyz convention) ────────────────────────────
+
+def _trigger_export_decision(project_root: Path, run_root: Path, contract_paths: dict) -> None:
+    print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
+    print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
+    decision_contract = contract_paths.get("latest_file") or contract_paths["event_file"]
+    decision_result = trigger_decision_layer(
+        project_root=project_root,
+        contract_path=decision_contract,
+    )
+    if decision_result["status"] == "completed":
+        print(f"[OK] Agent decision 已更新：{decision_result.get('decision_path', '')}")
+    elif decision_result["status"] == "warning":
+        audit_path = write_decision_hook_audit(
+            run_root=run_root,
+            stage="export_complete",
+            decision_result=decision_result,
+        )
+        print(
+            f"[WARN] Agent decision hook 警告：{decision_result.get('reason', '') or decision_result.get('decision_path', '')} "
+            f"(audit: {audit_path})"
+        )
+    else:
+        audit_path = write_decision_hook_audit(
+            run_root=run_root,
+            stage="export_complete",
+            decision_result=decision_result,
+        )
+        print(
+            f"[WARN] Agent decision hook 失敗：returncode={decision_result.get('returncode')} "
+            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')} "
+            f"(audit: {audit_path})"
+        )
+
 
 def rotmat_to_quat(R: np.ndarray) -> np.ndarray:
     """3x3 rotation matrix → quaternion (w, x, y, z)."""
@@ -409,22 +447,7 @@ def main():
         },
         summary="PLY export complete",
     )
-    print(f"[OK] Agent contract 已導出：{contract_paths['local_contract']}")
-    print(f"[OK] Agent event 已導出：{contract_paths['event_file']}")
-    decision_contract = contract_paths.get("latest_file") or contract_paths["event_file"]
-    decision_result = trigger_decision_layer(
-        project_root=project_root,
-        contract_path=decision_contract,
-    )
-    if decision_result["status"] == "completed":
-        print(f"[OK] Agent decision 已更新：{decision_result.get('decision_path', '')}")
-    elif decision_result["status"] == "warning":
-        print(f"[WARN] Agent decision hook 警告：{decision_result.get('reason', '') or decision_result.get('decision_path', '')}")
-    else:
-        print(
-            f"[WARN] Agent decision hook 失敗：returncode={decision_result.get('returncode')} "
-            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')}"
-        )
+    _trigger_export_decision(project_root, outputs_root, contract_paths)
 
 
 def _write_ply(means, scales, quats, opacities, sh0, shN, out_path: Path):

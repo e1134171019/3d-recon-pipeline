@@ -50,6 +50,7 @@ from src.utils.agent_contracts import (
     find_latest_step_file,
     infer_outputs_root,
     trigger_decision_layer,
+    write_decision_hook_audit,
     write_stage_contract,
 )
 
@@ -183,7 +184,7 @@ class TrainConfig:
 TRAIN_PARAM_CASTERS = {
     **dict.fromkeys(("train_mode", "imgdir", "colmap", "outdir", "scale_json", "loss_mask_dir"), str),
     **dict.fromkeys(("iterations", "sh_degree", "densify_until", "eval_steps", "data_factor", "cap_max"), int),
-    **dict.fromkeys(("scene_scale", "grow_grad2d", "opacity_reg", "ssim_lambda"), float),
+    **dict.fromkeys(("scene_scale", "grow_grad2d", "opacity_reg", "ssim_lambda", "mcmc_min_opacity", "mcmc_noise_lr"), float),
     **dict.fromkeys(("mcmc_refine_stop_iter",), int),
     **dict.fromkeys(
         (
@@ -197,7 +198,7 @@ TRAIN_PARAM_CASTERS = {
 TRAIN_CONTRACT_PARAM_KEYS = (
     "train_mode", "iterations", "sh_degree", "densify_until", "eval_steps",
     "data_factor", "absgrad", "grow_grad2d", "antialiased", "random_bkgd",
-    "cap_max", "opacity_reg", "pose_opt", "app_opt",
+    "cap_max", "mcmc_min_opacity", "mcmc_noise_lr", "opacity_reg", "pose_opt", "app_opt",
     "mcmc_refine_stop_iter",
     "ssim_lambda", "use_bilateral_grid", "depth_loss", "with_ut",
 )
@@ -208,6 +209,8 @@ EFFECTIVE_CONTRACT_PARAM_MAP = {
     "antialiased": "antialiased",
     "random_bkgd": "random_bkgd",
     "cap_max": "cap_max",
+    "mcmc_min_opacity": "mcmc_min_opacity",
+    "mcmc_noise_lr": "mcmc_noise_lr",
     "opacity_reg": "opacity_reg",
     "ssim_lambda": "ssim_lambda",
     "use_bilateral_grid": "use_bilateral_grid",
@@ -893,7 +896,7 @@ def _write_train_complete_contract(
     )
 
 
-def _trigger_train_decision(project_root: Path, contract_paths: dict) -> None:
+def _trigger_train_decision(project_root: Path, run_root: Path, contract_paths: dict) -> None:
     console.print(f"[green]Agent contract 已導出[/] {contract_paths['local_contract']}")
     console.print(f"[green]Agent event 已導出[/] {contract_paths['event_file']}")
     decision_contract = contract_paths.get("latest_file") or contract_paths["event_file"]
@@ -906,13 +909,25 @@ def _trigger_train_decision(project_root: Path, contract_paths: dict) -> None:
             f"[green]Agent decision 已更新[/] {decision_result.get('decision_path', '')}"
         )
     elif decision_result["status"] == "warning":
+        audit_path = write_decision_hook_audit(
+            run_root=run_root,
+            stage="train_complete",
+            decision_result=decision_result,
+        )
         console.print(
-            f"[yellow]Agent decision hook 警告[/] {decision_result.get('reason', '') or decision_result.get('decision_path', '')}"
+            f"[yellow]Agent decision hook 警告[/] {decision_result.get('reason', '') or decision_result.get('decision_path', '')} "
+            f"(audit: {audit_path})"
         )
     else:
+        audit_path = write_decision_hook_audit(
+            run_root=run_root,
+            stage="train_complete",
+            decision_result=decision_result,
+        )
         console.print(
             f"[red]Agent decision hook 失敗[/] returncode={decision_result.get('returncode')} "
-            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')}"
+            f"{decision_result.get('stderr', '') or decision_result.get('stdout', '')} "
+            f"(audit: {audit_path})"
         )
 
 
@@ -1101,7 +1116,7 @@ def main(
         latest_stats=latest_stats,
         latest_ckpt=latest_ckpt,
     )
-    _trigger_train_decision(project_root, contract_paths)
+    _trigger_train_decision(project_root, outputs_root, contract_paths)
 
 
 if __name__ == "__main__":

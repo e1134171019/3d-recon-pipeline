@@ -89,17 +89,47 @@ class ExportHelpersTests(unittest.TestCase):
                 "scales": torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32),
                 "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32),
                 "opacities": torch.tensor([0.5], dtype=torch.float32),
-                "sh0": torch.zeros((1, 1, 3), dtype=torch.float32),
-                "shN": torch.zeros((1, 15, 3), dtype=torch.float32),
+                "sh0": torch.tensor([[[10.0, 20.0, 30.0]]], dtype=torch.float32),
+                "shN": torch.arange(45, dtype=torch.float32).reshape(1, 15, 3),
             }
 
             with mock.patch("builtins.print"):
                 export_ply._write_ply_manual(splats, out_path)
 
-            header = out_path.read_bytes().split(b"end_header\n", 1)[0].decode("ascii")
+            raw = out_path.read_bytes()
+            header_raw, body = raw.split(b"end_header\n", 1)
+            header = header_raw.decode("ascii")
             self.assertIn("format binary_little_endian 1.0", header)
             self.assertIn("element vertex 1", header)
             self.assertIn("property float opacity", header)
+            dtype = np.dtype(
+                [
+                    ("x", np.float32),
+                    ("y", np.float32),
+                    ("z", np.float32),
+                    ("nx", np.float32),
+                    ("ny", np.float32),
+                    ("nz", np.float32),
+                    ("f_dc_0", np.float32),
+                    ("f_dc_1", np.float32),
+                    ("f_dc_2", np.float32),
+                ]
+                + [(f"f_rest_{i}", np.float32) for i in range(45)]
+                + [("opacity", np.float32)]
+                + [(f"scale_{i}", np.float32) for i in range(3)]
+                + [(f"rot_{i}", np.float32) for i in range(4)]
+            )
+            row = np.frombuffer(body, dtype=dtype, count=1)[0]
+            self.assertEqual(row["f_dc_0"], 10.0)
+            self.assertEqual(row["f_dc_1"], 20.0)
+            self.assertEqual(row["f_dc_2"], 30.0)
+            self.assertEqual(row["f_rest_0"], 0.0)
+            self.assertEqual(row["f_rest_1"], 3.0)
+            self.assertEqual(row["f_rest_14"], 42.0)
+            self.assertEqual(row["f_rest_15"], 1.0)
+            self.assertEqual(row["f_rest_29"], 43.0)
+            self.assertEqual(row["f_rest_30"], 2.0)
+            self.assertEqual(row["f_rest_44"], 44.0)
 
     def test_export_ply_main_rejects_missing_checkpoint(self):
         with workspace_tempdir("export_standard_missing_") as tmp:
