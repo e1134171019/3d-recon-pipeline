@@ -33,6 +33,84 @@ def _get_rel_paths(path_dir: str) -> List[str]:
     return paths
 
 
+def _camera_model_to_distortion(cam, *, use_scene_manager: bool) -> tuple[np.ndarray, str]:
+    """Normalize camera-model-specific distortion parameters."""
+    if use_scene_manager:
+        type_ = cam.camera_type
+        if type_ == 0 or type_ == "SIMPLE_PINHOLE":
+            return np.empty(0, dtype=np.float32), "perspective"
+        if type_ == 1 or type_ == "PINHOLE":
+            return np.empty(0, dtype=np.float32), "perspective"
+        if type_ == 2 or type_ == "SIMPLE_RADIAL":
+            return np.array([cam.k1, 0.0, 0.0, 0.0], dtype=np.float32), "perspective"
+        if type_ == 3 or type_ == "RADIAL":
+            return np.array([cam.k1, cam.k2, 0.0, 0.0], dtype=np.float32), "perspective"
+        if type_ == 4 or type_ == "OPENCV":
+            return np.array([cam.k1, cam.k2, cam.p1, cam.p2], dtype=np.float32), "perspective"
+        if type_ == 5 or type_ == "OPENCV_FISHEYE":
+            return np.array([cam.k1, cam.k2, cam.k3, cam.k4], dtype=np.float32), "fisheye"
+    else:
+        type_ = cam.model_name
+        if type_ == "SIMPLE_PINHOLE":
+            return np.empty(0, dtype=np.float32), "perspective"
+        if type_ == "PINHOLE":
+            return np.empty(0, dtype=np.float32), "perspective"
+        if type_ == "SIMPLE_RADIAL":
+            return np.array([cam.params[3], 0.0, 0.0, 0.0], dtype=np.float32), "perspective"
+        if type_ == "RADIAL":
+            return np.array([cam.params[3], cam.params[4], 0.0, 0.0], dtype=np.float32), "perspective"
+        if type_ == "OPENCV":
+            return np.array([cam.params[4], cam.params[5], cam.params[6], cam.params[7]], dtype=np.float32), "perspective"
+        if type_ == "OPENCV_FISHEYE":
+            return np.array([cam.params[4], cam.params[5], cam.params[6], cam.params[7]], dtype=np.float32), "fisheye"
+    raise ValueError(f"Only perspective and fisheye cameras are supported, got {type_}")
+
+
+def _build_image_path_mapping(
+    colmap_files: List[str],
+    image_files: List[str],
+) -> dict[str, str]:
+    """Map COLMAP image names to image-dir files without silent zip misalignment."""
+    if len(colmap_files) != len(image_files):
+        raise ValueError(
+            "COLMAP image count does not match image directory count: "
+            f"{len(colmap_files)} != {len(image_files)}"
+        )
+
+    if colmap_files == image_files:
+        return {rel: rel for rel in colmap_files}
+
+    def _index_by_name(paths: List[str], *, use_stem: bool) -> dict[str, str]:
+        index: dict[str, str] = {}
+        for rel_path in paths:
+            key = os.path.splitext(os.path.basename(rel_path))[0] if use_stem else os.path.basename(rel_path)
+            if key in index:
+                raise ValueError(
+                    "Image directory contains duplicate names; refusing ambiguous mapping: "
+                    f"{key}"
+                )
+            index[key] = rel_path
+        return index
+
+    basename_index = _index_by_name(image_files, use_stem=False)
+    stem_index = _index_by_name(image_files, use_stem=True)
+
+    mapping: dict[str, str] = {}
+    for rel_path in colmap_files:
+        basename = os.path.basename(rel_path)
+        image_rel = basename_index.get(basename)
+        if image_rel is None:
+            stem = os.path.splitext(basename)[0]
+            image_rel = stem_index.get(stem)
+        if image_rel is None:
+            raise ValueError(
+                "Image directory names do not match COLMAP names, and fallback "
+                f"mapping failed for: {rel_path}"
+            )
+        mapping[rel_path] = image_rel
+    return mapping
+
+
 def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
     """Resize image folder."""
     print(f"Downscaling images by {factor}x from {image_dir} to {resized_dir}.")
@@ -98,8 +176,10 @@ class Parser:
         camera_ids = []
         Ks_dict = dict()
         params_dict = dict()
+        camtypes_dict = dict()
         imsize_dict = dict()  # width, height
         mask_dict = dict()
+        has_distorted_camera = False
         bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
         for k in imdata:
             im = imdata[k]
@@ -131,43 +211,11 @@ class Parser:
             K[:2, :] /= factor
             Ks_dict[camera_id] = K
 
-            # Get distortion parameters.
-            if type_ == 0 or type_ == "SIMPLE_PINHOLE":
-                params = np.empty(0, dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 1 or type_ == "PINHOLE":
-                params = np.empty(0, dtype=np.float32)
-                camtype = "perspective"
-            if type_ == 2 or type_ == "SIMPLE_RADIAL":
-                k1 = cam.k1 if use_scene_manager else cam.params[3]
-                params = np.array([k1, 0.0, 0.0, 0.0], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 3 or type_ == "RADIAL":
-                if use_scene_manager:
-                    k1, k2 = cam.k1, cam.k2
-                else:
-                    k1, k2 = cam.params[3], cam.params[4]
-                params = np.array([k1, k2, 0.0, 0.0], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 4 or type_ == "OPENCV":
-                if use_scene_manager:
-                    k1, k2, p1, p2 = cam.k1, cam.k2, cam.p1, cam.p2
-                else:
-                    k1, k2, p1, p2 = cam.params[4], cam.params[5], cam.params[6], cam.params[7]
-                params = np.array([k1, k2, p1, p2], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 5 or type_ == "OPENCV_FISHEYE":
-                if use_scene_manager:
-                    k1, k2, k3, k4 = cam.k1, cam.k2, cam.k3, cam.k4
-                else:
-                    k1, k2, k3, k4 = cam.params[4], cam.params[5], cam.params[6], cam.params[7]
-                params = np.array([k1, k2, k3, k4], dtype=np.float32)
-                camtype = "fisheye"
-            assert (
-                camtype == "perspective" or camtype == "fisheye"
-            ), f"Only perspective and fisheye cameras are supported, got {type_}"
+            params, camtype = _camera_model_to_distortion(cam, use_scene_manager=use_scene_manager)
+            has_distorted_camera = has_distorted_camera or len(params) > 0
 
             params_dict[camera_id] = params
+            camtypes_dict[camera_id] = camtype
             imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
             mask_dict[camera_id] = None
         print(
@@ -176,7 +224,7 @@ class Parser:
 
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
-        if not (type_ == 0 or type_ == 1):
+        if has_distorted_camera:
             print("Warning: COLMAP Camera is not PINHOLE. Images have distortion.")
 
         w2c_mats = np.stack(w2c_mats, axis=0)
@@ -231,7 +279,7 @@ class Parser:
                 colmap_image_dir, image_dir + "_png", factor=factor
             )
             image_files = sorted(_get_rel_paths(image_dir))
-        colmap_to_image = dict(zip(colmap_files, image_files))
+        colmap_to_image = _build_image_path_mapping(colmap_files, image_files)
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
 
         # 3D points and {image_name -> [point_idx]}
@@ -301,6 +349,7 @@ class Parser:
         self.camera_ids = camera_ids  # List[int], (num_images,)
         self.Ks_dict = Ks_dict  # Dict of camera_id -> K
         self.params_dict = params_dict  # Dict of camera_id -> params
+        self.camtypes_dict = camtypes_dict  # Dict of camera_id -> camera model family
         self.imsize_dict = imsize_dict  # Dict of camera_id -> (width, height)
         self.mask_dict = mask_dict  # Dict of camera_id -> mask
         self.points = points  # np.ndarray, (num_points, 3)
@@ -336,6 +385,7 @@ class Parser:
             ), f"Missing params for camera {camera_id}"
             K = self.Ks_dict[camera_id]
             width, height = self.imsize_dict[camera_id]
+            camtype = self.camtypes_dict[camera_id]
 
             if camtype == "perspective":
                 K_undist, roi_undist = cv2.getOptimalNewCameraMatrix(

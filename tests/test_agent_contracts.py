@@ -11,6 +11,7 @@ from src.utils.agent_contracts import (
     StageContractValidationError,
     read_stage_contract,
     validate_stage_contract,
+    write_decision_hook_audit,
     write_stage_contract,
 )
 
@@ -67,6 +68,39 @@ class AgentContractTests(unittest.TestCase):
                 source="bad",
             )
 
+    def test_validate_stage_contract_rejects_non_iso_timestamp(self):
+        with self.assertRaises(StageContractValidationError):
+            validate_stage_contract(
+                {
+                    "schema_version": 1,
+                    "timestamp": 12345,
+                    "run_id": "run1",
+                    "run_root": "root",
+                    "stage": "train_complete",
+                    "status": "completed",
+                    "artifacts": {},
+                    "metrics": {},
+                    "params": {},
+                },
+                source="bad",
+            )
+
+        with self.assertRaises(StageContractValidationError):
+            validate_stage_contract(
+                {
+                    "schema_version": 1,
+                    "timestamp": "not-a-date",
+                    "run_id": "run1",
+                    "run_root": "root",
+                    "stage": "train_complete",
+                    "status": "completed",
+                    "artifacts": {},
+                    "metrics": {},
+                    "params": {},
+                },
+                source="bad",
+            )
+
     def test_read_stage_contract_accepts_utf8_sig(self):
         with temp_workspace() as tmp:
             path = Path(tmp) / "contract.json"
@@ -87,6 +121,24 @@ class AgentContractTests(unittest.TestCase):
                 encoding="utf-8-sig",
             )
             self.assertEqual(read_stage_contract(path)["stage"], "export_complete")
+
+    def test_write_decision_hook_audit_persists_warning_payload(self):
+        with temp_workspace() as tmp:
+            run_root = Path(tmp) / "outputs" / "experiments" / "run1"
+            audit_path = write_decision_hook_audit(
+                run_root=run_root,
+                stage="train_complete",
+                decision_result={
+                    "status": "warning",
+                    "reason": "decision_not_updated",
+                    "decision_path": str(run_root / "decision.json"),
+                },
+            )
+
+            payload = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["stage"], "train_complete")
+            self.assertEqual(payload["hook_status"], "warning")
+            self.assertEqual(payload["decision_result"]["reason"], "decision_not_updated")
 
 
 if __name__ == "__main__":

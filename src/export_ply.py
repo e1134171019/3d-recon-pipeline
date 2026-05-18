@@ -68,20 +68,19 @@ def main():
 def _write_ply_manual(splats: dict, out_path: Path):
     """手動將 Gaussian 參數寫入標準 3DGS PLY 格式。"""
     import numpy as np
-    import struct
 
     means     = splats["means"].float().cpu().numpy()       # (N,3)
     scales    = splats["scales"].float().cpu().numpy()      # (N,3)
-    quats     = splats["quats"].float().cpu().numpy()       # (N,4) xyzw
+    quats     = splats["quats"].float().cpu().numpy()       # (N,4) wxyz
     opacities = splats["opacities"].float().cpu().numpy()   # (N,) logit
     sh0       = splats["sh0"].float().cpu().numpy()         # (N,1,3)
     shN       = splats["shN"].float().cpu().numpy()         # (N,K,3)
 
     N = means.shape[0]
     # sh0 是 DC 分量；flatten 成 f_dc_0..2
-    f_dc = sh0.reshape(N, 3)                                # (N,3)
-    # shN 是高階 SH；flatten
-    sh_rest = shN.reshape(N, -1)                            # (N, K*3)
+    f_dc = sh0.transpose(0, 2, 1).reshape(N, 3)            # (N,3,1) -> (N,3)
+    # shN 是高階 SH；依 INRIA 格式展平成 R0..RK,G0..GK,B0..BK
+    sh_rest = shN.transpose(0, 2, 1).reshape(N, -1)        # (N,3,K) -> (N,3*K)
 
     print(f"  N={N:,}, sh_rest channels={sh_rest.shape[1]}")
 

@@ -187,6 +187,49 @@ class PreprocessAndDownscaleTests(unittest.TestCase):
             self.assertEqual(stats["filtering_stats"]["rejected_reasons"], {"blur": 1, "brightness": 1})
             self.assertEqual(stats["filtering_stats"]["status"], "FAIL")
 
+    def test_phase0_cli_exits_when_filtering_status_is_fail(self):
+        stats = {
+            "accepted_frames": 10,
+            "extraction_stats": {"status": "PASS"},
+            "filtering_stats": {"status": "FAIL"},
+        }
+
+        with (
+            mock.patch.object(preprocess_phase0, "get_video_path", return_value=Path("data/viode/hub.mp4")),
+            mock.patch.object(preprocess_phase0, "preprocess_phase0", return_value=stats),
+            mock.patch("builtins.print"),
+        ):
+            result = preprocess_phase0.run_phase0_cli()
+
+        self.assertEqual(result, 1)
+
+    def test_phase0_cli_exits_when_validation_status_is_fail(self):
+        with workspace_tempdir("preprocess_cli_validation_fail_") as tmp:
+            previous_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                (tmp / "data" / "frames_val").mkdir(parents=True)
+                stats = {
+                    "accepted_frames": 120,
+                    "extraction_stats": {"status": "PASS"},
+                    "filtering_stats": {"status": "PASS"},
+                }
+                val_stats = {
+                    "sampled_frames": 10,
+                }
+
+                with (
+                    mock.patch.object(preprocess_phase0, "get_video_path", return_value=Path("data/viode/hub.mp4")),
+                    mock.patch.object(preprocess_phase0, "preprocess_phase0", return_value=stats),
+                    mock.patch.object(preprocess_phase0, "sample_validation_set", return_value=val_stats),
+                    mock.patch("builtins.print"),
+                ):
+                    result = preprocess_phase0.run_phase0_cli()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(result, 1)
+
     def test_downscale_main_resizes_to_requested_max_side(self):
         with workspace_tempdir("downscale_") as tmp:
             src_dir = tmp / "src"

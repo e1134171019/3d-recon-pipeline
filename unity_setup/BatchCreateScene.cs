@@ -18,7 +18,10 @@ public static class BatchCreateScene
         if (splat == null)
         {
             Debug.LogError($"[BatchCreateScene] 找不到 GaussianSplatAsset：{ASSET_PATH}");
-            EditorApplication.Exit(1);
+            if (Application.isBatchMode)
+            {
+                EditorApplication.Exit(1);
+            }
             return;
         }
 
@@ -56,7 +59,10 @@ public static class BatchCreateScene
         AssetDatabase.Refresh();
 
         Debug.Log($"[BatchCreateScene] 完成：{SCENE_PATH}");
-        EditorApplication.Exit(0);
+        if (Application.isBatchMode)
+        {
+            EditorApplication.Exit(0);
+        }
     }
 }
 #endif

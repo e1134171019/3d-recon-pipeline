@@ -97,15 +97,20 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             ) as reconstruct,
             mock.patch.object(export_ply_unity, "write_stage_contract", return_value=contract_paths) as write_contract,
             mock.patch.object(export_ply_unity, "trigger_decision_layer", return_value=decision_result) as trigger,
+            mock.patch.object(
+                export_ply_unity,
+                "write_decision_hook_audit",
+                return_value=str(tmp / "agent_export_complete_decision_hook.json"),
+            ) as audit,
             mock.patch("builtins.print"),
         ):
             export_ply_unity.main()
 
-        return out_path, reconstruct, write_contract, trigger
+        return out_path, reconstruct, write_contract, trigger, audit
 
     def test_main_exports_with_params_denormalizes_filters_and_triggers_decision(self):
         with workspace_tempdir("export_unity_main_") as tmp:
-            out_path, reconstruct, write_contract, trigger = self._run_main(
+            out_path, reconstruct, write_contract, trigger, audit = self._run_main(
                 tmp,
                 extra_args=["--unity"],
             )
@@ -122,10 +127,11 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             self.assertTrue(kwargs["params"]["unity"])
             self.assertFalse(kwargs["params"]["no_denormalize"])
             trigger.assert_called_once()
+            audit.assert_not_called()
 
     def test_main_accepts_no_denormalize_and_warning_decision_result(self):
         with workspace_tempdir("export_unity_warning_") as tmp:
-            out_path, reconstruct, write_contract, trigger = self._run_main(
+            out_path, reconstruct, write_contract, trigger, audit = self._run_main(
                 tmp,
                 extra_args=["--no-denormalize"],
                 decision_result={"status": "warning", "reason": "decision_not_updated"},
@@ -136,10 +142,11 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             reconstruct.assert_not_called()
             self.assertTrue(write_contract.call_args.kwargs["params"]["no_denormalize"])
             trigger.assert_called_once()
+            audit.assert_called_once()
 
     def test_main_reports_failed_decision_result(self):
         with workspace_tempdir("export_unity_failed_decision_") as tmp:
-            out_path, _, _, trigger = self._run_main(
+            out_path, _, _, trigger, audit = self._run_main(
                 tmp,
                 extra_args=["--no-denormalize"],
                 decision_result={"status": "failed", "returncode": 2, "stderr": "boom"},
@@ -148,6 +155,7 @@ class ExportPlyUnityMainTests(unittest.TestCase):
 
             self.assertTrue(out_path.exists())
             trigger.assert_called_once()
+            audit.assert_called_once()
 
     def test_main_rejects_missing_checkpoint(self):
         with workspace_tempdir("export_unity_missing_ckpt_") as tmp:

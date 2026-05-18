@@ -73,6 +73,16 @@ def validate_stage_contract(payload: dict[str, Any], *, source: str = "") -> dic
         if not str(normalized.get(key, "")).strip():
             raise StageContractValidationError(f"contract field '{key}' cannot be empty:{source}")
 
+    timestamp = normalized.get("timestamp")
+    if not isinstance(timestamp, str):
+        raise StageContractValidationError(f"contract field 'timestamp' must be an ISO datetime string:{source}")
+    try:
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StageContractValidationError(
+            f"contract field 'timestamp' must be a valid ISO datetime string:{source}"
+        ) from exc
+
     return normalized
 
 
@@ -139,6 +149,27 @@ def write_stage_contract(
         "event_file": str(event_file),
         "latest_file": str(latest_file),
     }
+
+
+def write_decision_hook_audit(
+    *,
+    run_root: Path,
+    stage: str,
+    decision_result: dict[str, Any],
+) -> str:
+    run_root = run_root.resolve()
+    reports_dir = run_root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "timestamp": datetime.now().isoformat(),
+        "stage": stage,
+        "hook_status": str(decision_result.get("status") or "unknown"),
+        "decision_result": _normalize_payload_dict(decision_result),
+    }
+    audit_path = reports_dir / f"agent_{stage}_decision_hook.json"
+    audit_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(audit_path)
 
 
 def agent_decisions_root(project_root: Path) -> Path:

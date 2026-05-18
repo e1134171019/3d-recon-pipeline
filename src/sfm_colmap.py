@@ -942,8 +942,8 @@ def export_signals(result3: dict, sparse_model_dir: str, reports_dir: Path) -> N
 
 def _run_stereo_fusion_step(
     colmap_exe: str,
-    db: str,
     img: Path,
+    sparse_model: Path,
     work_p: Path,
     enable_fusion: bool = True,
 ) -> Path | None:
@@ -955,8 +955,8 @@ def _run_stereo_fusion_step(
     
     Args:
         colmap_exe: Path to colmap executable.
-        db: Path to COLMAP database.
         img: Path to image directory.
+        sparse_model: Path to the sparse reconstruction chosen for densification.
         work_p: Working directory path.
         enable_fusion: Whether to run fusion (skip if False).
     
@@ -969,8 +969,23 @@ def _run_stereo_fusion_step(
     
     dense_root = work_p / "dense"
     dense_root.mkdir(parents=True, exist_ok=True)
-    
+
     try:
+        workspace_markers = [dense_root / "images", dense_root / "sparse"]
+        if not all(path.exists() for path in workspace_markers):
+            print("\n" + "─"*70)
+            print("⏳ 執行 image_undistorter 準備 dense workspace...")
+            print("─"*70)
+            run([
+                colmap_exe, "image_undistorter",
+                "--image_path", str(img),
+                "--input_path", str(sparse_model),
+                "--output_path", str(dense_root),
+                "--output_type", "COLMAP",
+            ])
+        else:
+            print("[*] Reusing existing dense workspace")
+
         print("\n" + "─"*70)
         print("⏳ 執行 patch_match_stereo 深度估計...")
         print("─"*70)
@@ -1167,16 +1182,6 @@ def main(
         print("⏳ Mapper 完成 - 正在驗證重建結果...")
         print("─"*70 + "\n")
         
-        # 4) 密集點雲重建 (Dense Cloud stereo_fusion) - P0 突破口 1
-        print("[*] Step 3.5 - 執行密集點雲融合 (Dense Cloud stereo_fusion)...")
-        dense_ply = _run_stereo_fusion_step(
-            colmap_exe=colmap_exe,
-            db=paths.db,
-            img=paths.img,
-            work_p=paths.work_p,
-            enable_fusion=True,  # 可配置
-        )
-        
         # 🔍 診斷：Mapper 是否真的成功生成了 sparse/0
         sparse_root = paths.work_p / "sparse"
         best_sparse = _find_best_sparse_model(sparse_root)
@@ -1204,7 +1209,17 @@ def main(
                 "Step 3 重建驗證失敗。可能原因：\n" +
                 "\n".join(f"  • {err}" for err in result3["errors"])
             )
-        
+
+        # 4) 密集點雲重建 (Dense Cloud stereo_fusion) - P0 突破口 1
+        print("[*] Step 3.5 - 執行密集點雲融合 (Dense Cloud stereo_fusion)...")
+        dense_ply = _run_stereo_fusion_step(
+            colmap_exe=colmap_exe,
+            img=paths.img,
+            sparse_model=best_sparse,
+            work_p=paths.work_p,
+            enable_fusion=True,  # 可配置
+        )
+
         # ── 導出驗證報告供決策層使用 ──────────────────────
         print("\n[*] 正在導出點雲驗證報告...")
         export_signals(result3, str(best_sparse.resolve()), paths.reports_dir)
