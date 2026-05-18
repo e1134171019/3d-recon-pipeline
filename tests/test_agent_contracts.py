@@ -13,6 +13,7 @@ from src.utils.agent_contracts import (
     validate_stage_contract,
     write_decision_hook_audit,
     write_stage_contract,
+    trigger_decision_layer,
 )
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / "outputs" / "tmp_tests"
@@ -139,6 +140,53 @@ class AgentContractTests(unittest.TestCase):
             self.assertEqual(payload["stage"], "train_complete")
             self.assertEqual(payload["hook_status"], "warning")
             self.assertEqual(payload["decision_result"]["reason"], "decision_not_updated")
+
+    def test_trigger_decision_layer_runs_real_phase0_contract_loop(self):
+        agent_runner = Path(r"D:\agent_test\run_phase0.py")
+        if not agent_runner.exists():
+            self.skipTest("decision-layer runner not available on this machine")
+
+        with temp_workspace() as tmp:
+            root = Path(tmp)
+            run_root = root / "outputs" / "experiments" / "run1"
+            reports_dir = run_root / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            (reports_dir / "pointcloud_validation_report.json").write_text(
+                json.dumps(
+                    {
+                        "can_proceed_to_3dgs": True,
+                        "images_count": 853,
+                        "registered_images_count": 853,
+                        "points3d_count": 315775,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths = write_stage_contract(
+                project_root=root,
+                run_root=run_root,
+                stage="train_complete",
+                status="completed",
+                artifacts={"pointcloud_report": reports_dir / "pointcloud_validation_report.json"},
+                metrics={"psnr": 27.0, "ssim": 0.89, "lpips": 0.23, "num_gs": 1000000},
+                params={"train_mode": "mcmc", "iterations": 30000},
+                summary="integration contract",
+                run_id="integration_probe",
+            )
+
+            result = trigger_decision_layer(
+                project_root=root,
+                contract_path=paths["latest_file"],
+            )
+
+            self.assertEqual(result["returncode"], 0)
+            self.assertEqual(result["status"], "completed")
+            decision_path = Path(result["decision_path"])
+            self.assertTrue(decision_path.exists())
+            payload = json.loads(decision_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["source_stage"], "train_complete")
+            self.assertEqual(payload["run_id"], "integration_probe")
+            self.assertIn(payload["decision"], {"hold_export", "continue_train", "approve_export"})
 
 
 if __name__ == "__main__":

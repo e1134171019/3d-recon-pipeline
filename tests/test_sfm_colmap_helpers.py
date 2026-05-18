@@ -11,7 +11,13 @@ from src import sfm_colmap
 from _workspace_temp import workspace_tempdir
 
 
-def _build_feature_db(path: Path, keypoint_rows: list[int], descriptor_rows: list[int]) -> Path:
+def _build_feature_db(
+    path: Path,
+    keypoint_rows: list[int],
+    descriptor_rows: list[int],
+    *,
+    padding_mb: int = 11,
+) -> Path:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.execute("PRAGMA journal_mode=MEMORY")
@@ -23,7 +29,7 @@ def _build_feature_db(path: Path, keypoint_rows: list[int], descriptor_rows: lis
     conn.commit()
     conn.close()
     path.touch()
-    path.write_bytes(path.read_bytes() + b"\0" * (11 * 1024 * 1024))
+    path.write_bytes(path.read_bytes() + b"\0" * (padding_mb * 1024 * 1024))
     return path
 
 
@@ -366,6 +372,20 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertEqual(result["cameras_count"], 3)
             self.assertEqual(result["total_features"], 2400)
             self.assertGreater(result["avg_features_per_image"], 500)
+
+    def test_check_features_fails_when_db_is_small_even_if_feature_counts_look_good(self):
+        with workspace_tempdir("sfm_features_small_db_") as tmp:
+            db = _build_feature_db(
+                tmp / "database.db",
+                [1000, 1000, 1000],
+                [1000, 1000, 1000],
+                padding_mb=5,
+            )
+            with mock.patch("builtins.print"):
+                result = sfm_colmap.check_features(str(db))
+            self.assertFalse(result["pass"])
+            self.assertLess(result["db_size_mb"], 10)
+            self.assertIn("database.db 過小", result["errors"][0])
 
     def test_check_matching_success(self):
         with workspace_tempdir("sfm_matching_") as tmp:

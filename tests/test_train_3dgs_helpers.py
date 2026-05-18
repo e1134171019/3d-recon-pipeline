@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 import builtins
 from pathlib import Path
@@ -424,6 +425,33 @@ class Train3DGSHelpersTests(unittest.TestCase):
                 train_3dgs._ensure_scene_dir(scene_dir, img_target, sparse_target, 1)
 
             mocked_remove.assert_called_once_with(scene_dir)
+
+    @unittest.skipUnless(os.name == "nt", "real junction rebuild smoke is Windows-only")
+    def test_ensure_scene_dir_rebuilds_real_links_from_scratch(self):
+        with workspace_tempdir("train_scene_dir_real_links_") as tmp:
+            scene_dir = tmp / "scene"
+
+            img_target_v1 = tmp / "images_src_v1"
+            sparse_target_v1 = tmp / "sparse_src_v1"
+            img_target_v1.mkdir()
+            sparse_target_v1.mkdir()
+            (img_target_v1 / "frame_000001.jpg").write_bytes(b"v1")
+            (sparse_target_v1 / "cameras.bin").write_bytes(b"c1")
+
+            train_3dgs._ensure_scene_dir(scene_dir, img_target_v1, sparse_target_v1, 1)
+            self.assertEqual((scene_dir / "images" / "frame_000001.jpg").read_bytes(), b"v1")
+            self.assertEqual((scene_dir / "sparse" / "0" / "cameras.bin").read_bytes(), b"c1")
+
+            img_target_v2 = tmp / "images_src_v2"
+            sparse_target_v2 = tmp / "sparse_src_v2"
+            img_target_v2.mkdir()
+            sparse_target_v2.mkdir()
+            (img_target_v2 / "frame_000001.jpg").write_bytes(b"v2")
+            (sparse_target_v2 / "cameras.bin").write_bytes(b"c2")
+
+            train_3dgs._ensure_scene_dir(scene_dir, img_target_v2, sparse_target_v2, 1)
+            self.assertEqual((scene_dir / "images" / "frame_000001.jpg").read_bytes(), b"v2")
+            self.assertEqual((scene_dir / "sparse" / "0" / "cameras.bin").read_bytes(), b"c2")
 
     def test_resolve_effective_train_config_uses_mcmc_preset_defaults(self):
         effective = train_3dgs._resolve_effective_train_config(

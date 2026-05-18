@@ -213,8 +213,22 @@ def trigger_decision_layer(
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
+    production_root = (project_root / "outputs").resolve()
+    events_root = (production_root / "agent_events").resolve()
+    decisions_root = (production_root / "agent_decisions").resolve()
     result = subprocess.run(
-        [sys.executable, str(agent_runner), "--contract", str(contract_p)],
+        [
+            sys.executable,
+            str(agent_runner),
+            "--contract",
+            str(contract_p),
+            "--production-root",
+            str(production_root),
+            "--events-root",
+            str(events_root),
+            "--decisions-root",
+            str(decisions_root),
+        ],
         cwd=str(agent_runner.parent),
         capture_output=True,
         text=True,
