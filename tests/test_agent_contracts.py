@@ -6,6 +6,7 @@ import unittest
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from src.utils.agent_contracts import (
     StageContractValidationError,
@@ -183,10 +184,47 @@ class AgentContractTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             decision_path = Path(result["decision_path"])
             self.assertTrue(decision_path.exists())
+            self.assertTrue(decision_path.resolve().is_relative_to((root / "outputs" / "agent_decisions").resolve()))
+            self.assertFalse(
+                decision_path.resolve().is_relative_to(
+                    (Path(__file__).resolve().parents[1] / "outputs" / "agent_decisions").resolve()
+                )
+            )
             payload = json.loads(decision_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["source_stage"], "train_complete")
             self.assertEqual(payload["run_id"], "integration_probe")
             self.assertIn(payload["decision"], {"hold_export", "continue_train", "approve_export"})
+
+    def test_trigger_decision_layer_rejects_tmp_contract_with_formal_project_root(self):
+        agent_runner = Path(r"D:\agent_test\run_phase0.py")
+        if not agent_runner.exists():
+            self.skipTest("decision-layer runner not available on this machine")
+
+        with temp_workspace() as tmp:
+            root = Path(tmp)
+            run_root = root / "outputs" / "experiments" / "run1"
+            paths = write_stage_contract(
+                project_root=root,
+                run_root=run_root,
+                stage="train_complete",
+                status="completed",
+                artifacts={},
+                metrics={"lpips": 0.23},
+                params={"train_mode": "mcmc"},
+                summary="tmp contract",
+                run_id="tmp_contract_probe",
+            )
+
+            with mock.patch("src.utils.agent_contracts.subprocess.run") as run_mock:
+                result = trigger_decision_layer(
+                    project_root=Path(__file__).resolve().parents[1],
+                    contract_path=paths["latest_file"],
+                )
+
+            run_mock.assert_not_called()
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["reason"], "test_contract_outside_events_root")
+            self.assertFalse(result["decision_updated"])
 
 
 if __name__ == "__main__":

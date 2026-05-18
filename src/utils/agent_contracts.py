@@ -178,6 +178,19 @@ def agent_decisions_root(project_root: Path) -> Path:
     return root
 
 
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _is_tmp_test_contract(contract_path: Path, project_root: Path) -> bool:
+    tmp_tests_root = (project_root / "outputs" / "tmp_tests").resolve()
+    return _is_under(contract_path, tmp_tests_root)
+
+
 def _decision_filename_for_stage(stage: str) -> str | None:
     mapping = {
         "sfm_complete": "latest_sfm_decision.json",
@@ -216,6 +229,19 @@ def trigger_decision_layer(
     production_root = (project_root / "outputs").resolve()
     events_root = (production_root / "agent_events").resolve()
     decisions_root = (production_root / "agent_decisions").resolve()
+    if _is_tmp_test_contract(contract_p, project_root) and not _is_under(contract_p, events_root):
+        return {
+            "status": "failed",
+            "returncode": None,
+            "stage": stage,
+            "contract_path": str(contract_p),
+            "decision_path": str(decision_path) if decision_path is not None else "",
+            "decision_updated": False,
+            "reason": "test_contract_outside_events_root",
+            "stdout": "",
+            "stderr": "",
+        }
+
     result = subprocess.run(
         [
             sys.executable,
