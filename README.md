@@ -40,8 +40,10 @@ flowchart LR
 
 ## 目前正式最佳結果
 
-`U_base 853 張` + `官方 gsplat MCMC preset / 1M GS` →
-**`PSNR 26.1572 / SSIM 0.8826 / LPIPS 0.19187`**
+`U_base` + `MCMCStrategy / 1M GS / antialiased / 30000 iter` →
+**`PSNR 26.3577 / SSIM 0.8852 / LPIPS 0.189117`**
+
+最新 4K PNG formal rerun（2026-05-18）已完成：`PSNR 27.2504 / SSIM 0.8925 / LPIPS 0.236957`。它未改寫離線最佳 LPIPS，但 Unity GUI 人工觀察有正向訊號；因此正式判讀採「離線 benchmark」與「Unity deployment review」分軌，不以單一 LPIPS 覆蓋部署品質。
 
 完整實驗紀錄、各路線（`U_base default` / `ffmpeg full-chain` / `GLOMAP` / `hloc+SuperPoint` / `Mask Route A` / `L0-S1` 等）的數據與失敗原因見 [docs/實驗歷史與決策日誌.md](docs/實驗歷史與決策日誌.md)。
 

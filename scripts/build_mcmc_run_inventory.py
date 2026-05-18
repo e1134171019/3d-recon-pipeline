@@ -16,6 +16,7 @@ EXPERIMENTS_ROOT = ROOT / "outputs" / "experiments"
 REPORTS_ROOT = ROOT / "outputs" / "reports"
 TRAIN_PROBES_ROOT = EXPERIMENTS_ROOT / "train_probes"
 MARATHON_ROOT = EXPERIMENTS_ROOT / "mcmc_marathon"
+FORMAL_RERUNS_ROOT = EXPERIMENTS_ROOT / "formal_reruns"
 
 
 @dataclass
@@ -229,6 +230,25 @@ def _collect_marathon_records() -> list[RunRecord]:
     return records
 
 
+def _collect_formal_rerun_records() -> list[RunRecord]:
+    records: list[RunRecord] = []
+    if not FORMAL_RERUNS_ROOT.exists():
+        return records
+
+    for cfg_path in sorted(FORMAL_RERUNS_ROOT.glob("*/cfg.yml")):
+        if "mcmc" not in cfg_path.parent.name.lower():
+            continue
+        records.append(
+            _build_record(
+                source_collection="formal_reruns",
+                batch_or_wrapper=FORMAL_RERUNS_ROOT.name,
+                run_dir=cfg_path.parent,
+                cfg_path=cfg_path,
+            )
+        )
+    return records
+
+
 def _write_csv(records: list[RunRecord], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [record.to_row() for record in records]
@@ -244,6 +264,7 @@ def _write_summary(records: list[RunRecord], output_path: Path) -> None:
         "total_runs": len(records),
         "train_probes_runs": sum(1 for item in records if item.source_collection == "train_probes"),
         "mcmc_marathon_runs": sum(1 for item in records if item.source_collection == "mcmc_marathon"),
+        "formal_reruns": sum(1 for item in records if item.source_collection == "formal_reruns"),
         "completed_runs": sum(1 for item in records if item.completed),
         "best_lpips_run": None,
     }
@@ -255,7 +276,7 @@ def _write_summary(records: list[RunRecord], output_path: Path) -> None:
 
 
 def main() -> None:
-    records = _collect_train_probe_records() + _collect_marathon_records()
+    records = _collect_train_probe_records() + _collect_marathon_records() + _collect_formal_rerun_records()
     records.sort(key=lambda item: (item.source_collection, item.batch_or_wrapper, item.run_name))
 
     csv_path = REPORTS_ROOT / "mcmc_run_inventory.csv"
