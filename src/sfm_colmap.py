@@ -1,6 +1,6 @@
 # sfm_colmap.py
 # -*- coding: utf-8 -*-
-from src.utils import ensure_utf8_stdout
+from src.utils import ensure_utf8_stdout, read_json_robust
 
 ensure_utf8_stdout()
 
@@ -204,7 +204,10 @@ def _load_sfm_params(params_json: str) -> tuple[dict, dict]:
     if not params_path.exists():
         raise SystemExit(f"找不到 params json：{params_path}")
 
-    payload = json.loads(params_path.read_text(encoding="utf-8"))
+    try:
+        payload = read_json_robust(params_path)
+    except Exception as exc:
+        raise SystemExit(f"無法讀取 params json：{params_path} ({exc})") from exc
     plan = payload.get("sfm_params", payload)
     recommended = plan.get("recommended_params", {})
     if not isinstance(recommended, dict):
@@ -413,6 +416,8 @@ def _read_sparse_model_stats(sparse_path: Path) -> tuple[dict, list[str]]:
         "images_count": 0,
         "registered_images_count": 0,
         "points3d_count": 0,
+        "stats_source": "unknown",
+        "stats_unreliable": False,
     }
 
     try:
@@ -446,6 +451,7 @@ def _read_sparse_model_stats(sparse_path: Path) -> tuple[dict, list[str]]:
             stats["points3d_count"] = read_count("num_points3D")
         except AttributeError:
             stats["points3d_count"] = read_len("points3D")
+        stats["stats_source"] = "pycolmap"
         return stats, warnings
     except Exception as exc:
         warnings.append(f"pycolmap read failed, falling back to file-size estimation: {exc}")
@@ -459,6 +465,9 @@ def _read_sparse_model_stats(sparse_path: Path) -> tuple[dict, list[str]]:
     stats["images_count"] = images_size // 190000 if images_size > 0 else 0
     stats["registered_images_count"] = stats["images_count"]
     stats["points3d_count"] = points3d_size // 148 if points3d_size > 0 else 0
+    stats["stats_source"] = "file_size_fallback"
+    stats["stats_unreliable"] = True
+    warnings.append("file-size sparse stats are approximate and cannot pass the automated Gate 1/3DGS gate")
     return stats, warnings
 
 
@@ -468,24 +477,18 @@ def _find_best_sparse_model(sparse_root: Path) -> Path | None:
         return None
 
     candidates = []
-    for child in sorted(sparse_root.iterdir()):
-        if not child.is_dir():
+    seen: set[Path] = set()
+    candidate_dirs = [sparse_root]
+    candidate_dirs.extend(path.parent for path in sparse_root.rglob("cameras.bin"))
+    for model_dir in sorted(candidate_dirs):
+        if model_dir in seen or not model_dir.is_dir():
             continue
-        direct_required = [child / "cameras.bin", child / "images.bin", child / "points3D.bin"]
-        if all(path.exists() and path.stat().st_size > 0 for path in direct_required):
-            stats, _ = _read_sparse_model_stats(child)
-            candidates.append((child, stats))
+        seen.add(model_dir)
+        required = [model_dir / "cameras.bin", model_dir / "images.bin", model_dir / "points3D.bin"]
+        if not all(path.exists() and path.stat().st_size > 0 for path in required):
             continue
-
-        # GLOMAP Windows binary may create output_path/0/{cameras,images,points3D}.bin.
-        for nested in sorted(child.iterdir()):
-            if not nested.is_dir():
-                continue
-            nested_required = [nested / "cameras.bin", nested / "images.bin", nested / "points3D.bin"]
-            if not all(path.exists() and path.stat().st_size > 0 for path in nested_required):
-                continue
-            stats, _ = _read_sparse_model_stats(nested)
-            candidates.append((nested, stats))
+        stats, _ = _read_sparse_model_stats(model_dir)
+        candidates.append((model_dir, stats))
 
     if not candidates:
         return None
@@ -772,7 +775,7 @@ def check_matching(db: str) -> dict:
         })
         num_matches = row["num_matches"] or 0
         num_inlier_matches = row["num_inlier"] or 0
-        num_attempted_pairs = row["num_pairs"] or 1
+        num_attempted_pairs = row["num_pairs"] or 0
     except Exception as e:
         return _report(
             "Step 2 匹配驗證",
@@ -791,6 +794,9 @@ def check_matching(db: str) -> dict:
     
     if num_matches < 100:
         errors.append(f"總匹配數不足: {num_matches} < 100")
+
+    if num_attempted_pairs == 0:
+        errors.append("沒有建立任何匹配影像對 (num_pairs=0)")
     
     if num_inlier_matches == 0:
         errors.append("內點匹配數為 0")
@@ -878,6 +884,9 @@ def check_reconstruction(sparse_model_dir: str, min_points3d: int = 50000) -> di
     
     # 3. 驗證重建品質
     min_registered_images = 3   # 實際可用的是註冊影像數，不是相機內參模型數
+
+    if stats.get("stats_unreliable"):
+        errors.append("pycolmap 不可用時的 file-size fallback 不能作為自動 Gate 依據，需人工確認 sparse model")
     
     if stats["registered_images_count"] < min_registered_images:
         errors.append(
@@ -908,6 +917,8 @@ def check_reconstruction(sparse_model_dir: str, min_points3d: int = 50000) -> di
             "registered_images_count": stats["registered_images_count"],
             "points3d_count": stats["points3d_count"],
             "can_proceed_to_3dgs": can_proceed,
+            "stats_source": stats.get("stats_source", "unknown"),
+            "stats_unreliable": bool(stats.get("stats_unreliable", False)),
         },
         errors,
         warnings
@@ -934,6 +945,10 @@ def export_signals(result3: dict, sparse_model_dir: str, reports_dir: Path) -> N
         "registered_images_count": result3.get("registered_images_count", result3["images_count"]),
         "points3d_count": result3["points3d_count"],
         "can_proceed_to_3dgs": result3["can_proceed_to_3dgs"],
+        "stats_source": result3.get("stats_source", "unknown"),
+        "stats_unreliable": bool(result3.get("stats_unreliable", False)),
+        "errors": result3.get("errors", []),
+        "warnings": result3.get("warnings", []),
         "diagnosis": "SfM 重建成功，可進行 3DGS 訓練" if result3["can_proceed_to_3dgs"] else "SfM 重建失敗",
     }
     report_file.write_text(json.dumps(report_data, indent=2, ensure_ascii=False))

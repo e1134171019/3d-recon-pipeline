@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Recon Observer</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Artifact-first Observer</p>
+          <h1>3D Recon Mission Control</h1>
+          <p class="sub">
+            Vue 只讀正式 event / decision / report。Ollama 是 teacher，不控制 UI 或 runtime。
+          </p>
+        </div>
+        <div class="health-card" :class="{ stale: isStale }">
+          <span class="dot"></span>
+          <strong>{{ healthLabel }}</strong>
+          <small>{{ snapshot?.observer?.heartbeat || 'no heartbeat' }}</small>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel flow-panel">
+          <div class="panel-head">
+            <p class="eyebrow">Formal Runtime</p>
+            <h2>Stage Flow</h2>
+          </div>
+          <div class="stage-flow">
+            <article v-for="stage in stages" :key="stage.key" class="stage-card">
+              <span class="stage-index">{{ stage.label }}</span>
+              <h3>{{ eventFor(stage.key).run_id || 'no event' }}</h3>
+              <p>Status: <strong>{{ eventFor(stage.key).status || 'unknown' }}</strong></p>
+              <p>Decision: <strong>{{ decisionFor(stage.key).decision || 'none' }}</strong></p>
+              <p>Next: {{ decisionFor(stage.key).next_action || 'manual review' }}</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel metric-panel">
+          <div class="panel-head">
+            <p class="eyebrow">Current Benchmark</p>
+            <h2>MCMC / Unity</h2>
+          </div>
+          <div class="metric-grid">
+            <div class="metric">
+              <span>Best LPIPS</span>
+              <strong>{{ bestLpips }}</strong>
+            </div>
+            <div class="metric">
+              <span>Best Run</span>
+              <strong>{{ bestRun }}</strong>
+            </div>
+            <div class="metric wide">
+              <span>Deployment Review</span>
+              <strong>{{ deploymentVerdict }}</strong>
+              <small>{{ deploymentNote }}</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel teacher-panel">
+          <div class="panel-head">
+            <p class="eyebrow">Offline Learning</p>
+            <h2>Teacher / Learner</h2>
+          </div>
+          <div class="two-col">
+            <div class="card-line">
+              <span>Teacher</span>
+              <strong>{{ snapshot?.teacher?.status || 'unknown' }}</strong>
+              <small>{{ snapshot?.teacher?.teacher_count ?? '-' }} labels</small>
+            </div>
+            <div class="card-line warning" v-if="snapshot?.learner?.overfit_warning">
+              <span>Learner Warning</span>
+              <strong>possible overfit</strong>
+              <small>{{ snapshot?.learner?.warning_reason }}</small>
+            </div>
+            <div class="card-line">
+              <span>Dataset</span>
+              <strong>{{ learner.dataset_size ?? '-' }}</strong>
+              <small>feature_dim {{ learner.feature_dim ?? '-' }}</small>
+            </div>
+            <div class="card-line">
+              <span>LOO Accuracy</span>
+              <strong>{{ percent(learner.leave_one_out_accuracy) }}</strong>
+              <small>{{ learner.positive_count ?? '-' }} positive / {{ learner.negative_count ?? '-' }} negative</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel artifact-panel">
+          <div class="panel-head">
+            <p class="eyebrow">Watched Artifacts</p>
+            <h2>Read-only Inputs</h2>
+          </div>
+          <div class="artifact-list">
+            <article v-for="item in artifacts" :key="item.label" class="artifact-row" :class="{ missing: !item.exists }">
+              <div>
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.path || 'not found' }}</small>
+              </div>
+              <span>{{ item.exists ? formatAge(item.age_seconds) : 'missing' }}</span>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel guardrail-panel">
+          <div class="panel-head">
+            <p class="eyebrow">Guardrail</p>
+            <h2>No Direct Writes</h2>
+          </div>
+          <p>
+            UI feedback buttons are intentionally disabled in V0. Any future pass/fail or deployment note must call
+            a formal CLI and produce feedback artifacts before teacher / learner can absorb it.
+          </p>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

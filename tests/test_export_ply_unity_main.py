@@ -144,6 +144,17 @@ class ExportPlyUnityMainTests(unittest.TestCase):
             trigger.assert_called_once()
             audit.assert_called_once()
 
+    def test_main_records_empty_params_json_as_empty_artifact(self):
+        with workspace_tempdir("export_unity_empty_params_") as tmp:
+            out_path, _, write_contract, _, _ = self._run_main(
+                tmp,
+                extra_args=["--no-denormalize", "--params-json", ""],
+                data_dir=False,
+            )
+
+            self.assertTrue(out_path.exists())
+            self.assertEqual(write_contract.call_args.kwargs["artifacts"]["params_json"], "")
+
     def test_main_reports_failed_decision_result(self):
         with workspace_tempdir("export_unity_failed_decision_") as tmp:
             out_path, _, _, trigger, audit = self._run_main(

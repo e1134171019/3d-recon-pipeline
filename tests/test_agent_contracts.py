@@ -10,6 +10,7 @@ from unittest import mock
 
 from src.utils.agent_contracts import (
     StageContractValidationError,
+    _resolve_agent_runner,
     read_stage_contract,
     validate_stage_contract,
     write_decision_hook_audit,
@@ -123,6 +124,13 @@ class AgentContractTests(unittest.TestCase):
                 encoding="utf-8-sig",
             )
             self.assertEqual(read_stage_contract(path)["stage"], "export_complete")
+
+    def test_resolve_agent_runner_uses_env_overrides(self):
+        with mock.patch.dict("os.environ", {"AGENT_TEST_RUNNER": r"C:\custom\runner.py"}, clear=False):
+            self.assertEqual(_resolve_agent_runner(), Path(r"C:\custom\runner.py"))
+
+        with mock.patch.dict("os.environ", {"AGENT_TEST_RUNNER": "", "AGENT_TEST_ROOT": r"C:\custom\agent"}, clear=False):
+            self.assertEqual(_resolve_agent_runner(), Path(r"C:\custom\agent") / "run_phase0.py")
 
     def test_write_decision_hook_audit_persists_warning_payload(self):
         with temp_workspace() as tmp:

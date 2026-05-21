@@ -65,6 +65,7 @@ C:\3d-recon-pipeline
 ├─ src/                 正式生產層入口（preprocess / sfm / train / export）
 ├─ tests/               正式主線 smoke / unit tests
 ├─ scripts/             本機 watcher / 圖表工具（不計 coverage）
+├─ observer_ui/         Vue read-only 可視化閉環（只讀正式 artifacts）
 ├─ data/                原始與工作影像集
 ├─ outputs/             所有生成物、實驗結果、報告
 ├─ weights/             本機模型權重

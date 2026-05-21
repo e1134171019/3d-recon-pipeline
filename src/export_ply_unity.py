@@ -120,7 +120,9 @@ def _reconstruct_normalize_transform(data_dir: str) -> np.ndarray:
     從 COLMAP 場景重建 gsplat 訓練時使用的 normalize transform。
     回傳 4x4 transform matrix（與 gsplat_runner/datasets/colmap.py 完全等價）。
     """
-    sys.path.insert(0, str(Path(__file__).parent.parent / "gsplat_runner"))
+    gsplat_runner_path = str(Path(__file__).parent.parent / "gsplat_runner")
+    if gsplat_runner_path not in sys.path:
+        sys.path.insert(0, gsplat_runner_path)
     from datasets.colmap import Parser
 
     parser = Parser(
@@ -343,7 +345,7 @@ def main():
 
     # ── 載入 checkpoint ──────────────────────
     print(f"載入 checkpoint：{ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     splats = ckpt["splats"]
     step = ckpt.get("step", -1)
     print(f"  step = {step}")

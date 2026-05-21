@@ -555,12 +555,21 @@ def _resolve_train_config(config: TrainConfig, params_json: str) -> TrainConfig:
     if not params_json:
         return config
 
-    plan, recommended = _load_train_params(params_json)
+    try:
+        plan, recommended = _load_train_params(params_json)
+        resolved = _apply_recommended_train_params(config, recommended)
+    except Exception as exc:
+        console.print(
+            f"[yellow][WARN] 無法套用 agent 訓練設定，改用 CLI/default 設定："
+            f"{Path(params_json).resolve()} ({exc})[/]"
+        )
+        return config
+
     console.print(
         f"[cyan]套用 agent 訓練設定[/] {Path(params_json).resolve()} "
         f"(profile={plan.get('profile_name', 'unknown')})"
     )
-    return _apply_recommended_train_params(config, recommended)
+    return resolved
 
 
 def _build_eval_schedule(step_interval: int, max_steps: int) -> list[int]:
@@ -759,7 +768,7 @@ def _build_trainer_args(
     if config.train_mode == "default":
         base_args.extend(["--strategy.grow-grad2d", str(config.grow_grad2d)])
     elif config.train_mode == "mcmc":
-        base_args.extend(["--strategy.cap-max", str(config.cap_max)])
+        base_args.extend(["--strategy.cap-max", str(effective_cfg["cap_max"])])
         if config.mcmc_min_opacity is not None:
             base_args.extend(["--strategy.min-opacity", str(config.mcmc_min_opacity)])
         if config.mcmc_noise_lr is not None:
@@ -836,7 +845,7 @@ def _build_training_summary_lines(
 def _collect_train_metrics(out_dir: Path) -> tuple[dict, Path | None, Path | None]:
     latest_stats = find_latest_step_file(out_dir, "val_step*.json", "val_step")
     latest_ckpt = find_latest_step_file(out_dir, "ckpt_*_rank0.pt", "ckpt_")
-    metrics: dict[str, float | int | None] = {
+    metrics: dict[str, float | int | str | None] = {
         "psnr": None,
         "ssim": None,
         "lpips": None,
@@ -849,8 +858,9 @@ def _collect_train_metrics(out_dir: Path) -> tuple[dict, Path | None, Path | Non
             metrics["ssim"] = stats_payload.get("ssim")
             metrics["lpips"] = stats_payload.get("lpips")
             metrics["num_gs"] = stats_payload.get("num_GS", stats_payload.get("num_gs"))
-        except Exception:
-            pass
+        except Exception as exc:
+            metrics["metrics_read_error"] = f"{latest_stats}: {exc}"
+            print(f"[WARN] 無法讀取訓練 metrics：{latest_stats} ({exc})")
     return metrics, latest_stats, latest_ckpt
 
 

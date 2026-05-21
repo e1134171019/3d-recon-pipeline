@@ -241,6 +241,19 @@ class SfmColmapHelpersTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 sfm_colmap._load_sfm_params(str(bad))
 
+    def test_load_sfm_params_accepts_utf8_sig(self):
+        with workspace_tempdir("sfm_params_bom_") as tmp:
+            params = tmp / "sfm_params.json"
+            params.write_text(
+                json.dumps({"sfm_params": {"recommended_params": {"max_features": 4096}}}),
+                encoding="utf-8-sig",
+            )
+
+            plan, recommended = sfm_colmap._load_sfm_params(str(params))
+
+        self.assertIn("recommended_params", plan)
+        self.assertEqual(recommended["max_features"], 4096)
+
     def test_read_sparse_model_stats_uses_file_size_fallback_when_pycolmap_fails(self):
         real_import = builtins.__import__
 
@@ -263,6 +276,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertEqual(stats["cameras_count"], 2)
         self.assertEqual(stats["images_count"], 2)
         self.assertEqual(stats["points3d_count"], 10)
+        self.assertEqual(stats["stats_source"], "file_size_fallback")
+        self.assertTrue(stats["stats_unreliable"])
         self.assertTrue(warnings)
 
     def test_read_sparse_model_stats_supports_pycolmap_method_and_attribute_counts(self):
@@ -289,6 +304,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
         self.assertEqual(stats["images_count"], 5)
         self.assertEqual(stats["registered_images_count"], 4)
         self.assertEqual(stats["points3d_count"], 4)
+        self.assertEqual(stats["stats_source"], "pycolmap")
+        self.assertFalse(stats["stats_unreliable"])
         self.assertEqual(warnings, [])
 
     def test_find_best_sparse_model_prefers_more_registered_images_then_points(self):
@@ -316,7 +333,7 @@ class SfmColmapHelpersTests(unittest.TestCase):
     def test_find_best_sparse_model_accepts_nested_glomap_layout(self):
         with workspace_tempdir("sfm_sparse_nested_") as tmp:
             sparse_root = tmp
-            nested = sparse_root / "0" / "0"
+            nested = sparse_root / "glomap" / "output" / "0"
             nested.mkdir(parents=True)
             for name in ("cameras.bin", "images.bin", "points3D.bin"):
                 (nested / name).write_bytes(b"x" * 128)
@@ -397,6 +414,14 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertEqual(result["num_inlier_matches"], 1400)
             self.assertGreater(result["inlier_ratio"], 0.1)
 
+    def test_check_matching_fails_when_no_pairs_were_built(self):
+        with workspace_tempdir("sfm_matching_zero_pairs_") as tmp:
+            db = _build_matching_db(tmp / "database.db", [0, 0], [0, 0])
+            with mock.patch("builtins.print"):
+                result = sfm_colmap.check_matching(str(db))
+            self.assertFalse(result["pass"])
+            self.assertIn("num_pairs=0", " ".join(result["errors"]))
+
     def test_check_reconstruction_success_and_export_signals(self):
         with workspace_tempdir("sfm_recon_") as tmp:
             sparse_dir = tmp / "sparse" / "0"
@@ -439,6 +464,39 @@ class SfmColmapHelpersTests(unittest.TestCase):
             self.assertIsNotNone(payload)
             self.assertEqual(payload["points3d_count"], 60000)
             self.assertTrue(payload["can_proceed_to_3dgs"])
+            self.assertEqual(payload["stats_source"], "unknown")
+            self.assertFalse(payload["stats_unreliable"])
+
+    def test_check_reconstruction_blocks_file_size_fallback_stats(self):
+        with workspace_tempdir("sfm_recon_fallback_") as tmp:
+            sparse_dir = tmp / "sparse" / "0"
+            sparse_dir.mkdir(parents=True)
+            (sparse_dir / "cameras.bin").write_bytes(b"x" * 64)
+            (sparse_dir / "images.bin").write_bytes(b"x" * 4096)
+            (sparse_dir / "points3D.bin").write_bytes(b"x" * 16384)
+
+            with mock.patch.object(
+                sfm_colmap,
+                "_read_sparse_model_stats",
+                return_value=(
+                    {
+                        "cameras_count": 1,
+                        "images_count": 60,
+                        "registered_images_count": 60,
+                        "points3d_count": 60000,
+                        "stats_source": "file_size_fallback",
+                        "stats_unreliable": True,
+                    },
+                    ["fallback"],
+                ),
+            ):
+                with mock.patch("builtins.print"):
+                    result = sfm_colmap.check_reconstruction(str(sparse_dir))
+
+        self.assertFalse(result["pass"])
+        self.assertFalse(result["can_proceed_to_3dgs"])
+        self.assertTrue(result["stats_unreliable"])
+        self.assertIn("file-size fallback", " ".join(result["errors"]))
 
     def test_main_applies_agent_params_and_writes_contract(self):
         with workspace_tempdir("sfm_main_success_") as tmp:

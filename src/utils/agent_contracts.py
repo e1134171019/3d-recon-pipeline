@@ -11,7 +11,7 @@ from typing import Any
 
 REQUIRED_STAGE_CONTRACT_KEYS = ("schema_version", "timestamp", "run_id", "run_root", "stage", "status")
 DICT_STAGE_CONTRACT_KEYS = ("artifacts", "metrics", "params")
-JSON_ENCODINGS = ("utf-8", "utf-8-sig")
+JSON_ENCODINGS = ("utf-8-sig", "utf-8")
 
 
 class StageContractValidationError(ValueError):
@@ -91,11 +91,16 @@ def read_stage_contract(path: Path) -> dict[str, Any]:
     last_error: Exception | None = None
     for encoding in JSON_ENCODINGS:
         try:
-            payload = json.loads(path.read_text(encoding=encoding))
-            return validate_stage_contract(payload, source=str(path))
-        except Exception as exc:
+            text = path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
             last_error = exc
-    raise last_error if last_error is not None else StageContractValidationError(f"contract parse failed:{path}")
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise StageContractValidationError(f"contract JSON parse failed:{path}: {exc}") from exc
+        return validate_stage_contract(payload, source=str(path))
+    raise StageContractValidationError(f"contract decode failed:{path}: {last_error}")
 
 
 def write_stage_contract(
@@ -200,6 +205,18 @@ def _decision_filename_for_stage(stage: str) -> str | None:
     return mapping.get(stage)
 
 
+def _resolve_agent_runner() -> Path:
+    runner_override = os.environ.get("AGENT_TEST_RUNNER", "").strip()
+    if runner_override:
+        return Path(runner_override).expanduser()
+
+    root_override = os.environ.get("AGENT_TEST_ROOT", "").strip()
+    if root_override:
+        return Path(root_override).expanduser() / "run_phase0.py"
+
+    return Path(r"D:\agent_test\run_phase0.py")
+
+
 def trigger_decision_layer(
     *,
     project_root: Path,
@@ -209,7 +226,7 @@ def trigger_decision_layer(
     if not contract_p.exists():
         return {"status": "skipped", "reason": f"contract_missing:{contract_p}"}
 
-    agent_runner = Path(r"D:\agent_test\run_phase0.py")
+    agent_runner = _resolve_agent_runner().resolve()
     if not agent_runner.exists():
         return {"status": "skipped", "reason": f"agent_runner_missing:{agent_runner}"}
 

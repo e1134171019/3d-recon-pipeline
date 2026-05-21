@@ -226,12 +226,37 @@
   - 哪些 Scaffold / 新框架 probe 值得繼續
   - 何時可把 offline learner 升成 advisory layer
 
+### 1J. Observer UI / Vue 可視化閉環規則
+- **Vue / Observer UI 是觀測層，不是正式 runtime。** UI 只能讀正式 event、decision、report、log 與 deployment review；不得直接覆寫 `latest_*_decision.json`、不得繞過 arbiter、不得把人工點選結果直接升格成正式主線。
+- **Ollama/Qwen 不得驅動 Vue 或啟停流程。** Ollama/Qwen 的角色維持 teacher：負責語意標註與先驗輔助；不得啟動、停止、控制 Vue、observer service、Unity、training 或 formal runtime。
+- **Codex / observer service 才能負責 UI 健康檢查與事件推送。** 若任務涉及 training、SfM、export、Unity、teacher、learner 或 agent，任務開始前應檢查 observer UI 狀態：
+  - backend health 是否可用
+  - Vue frontend 是否啟動
+  - heartbeat 是否新於本輪任務開始時間
+  - 是否正在監聽正式 artifact：`outputs/agent_events/latest_*_complete.json`、`outputs/agent_decisions/latest_*_decision.json`、`outputs/reports/*.json`、`deployment_review.json`、teacher / learner report
+- **UI 未啟動時不得假設可視化已同步。** 若 observer UI 未啟動，對話框 AI 必須明確回報「observer_ui 未啟動」；長時間任務可由 Codex 依終端規則啟動 observer service，或提示使用者啟動，但不得讓 Ollama/Qwen 代為控制。
+- **閉環資料流固定為 artifact-first。** 正式流程應為：`run/log/event -> observer backend -> Vue 顯示 -> human feedback -> formal feedback artifact -> teacher/learner 離線吸收 -> meta review`。禁止改成 `Ollama -> Vue -> decision`。
+- **人工 UI 操作必須落成正式 artifact。** 若 Vue 提供 pass/fail、human review、deployment note 或標籤按鈕，只能呼叫正式 CLI 或寫入正式 feedback / deployment review artifact；後續由 teacher / learner 離線吸收，不得直接改 formal runtime。
+
 ## 2. 嚴密的 Gate 0~3 快速驗證協定
 為了不浪費算力，Agent 評估任何新增實驗（如 L0 洗幀）時，**必須絕對遵守**以下閥門標準，未過關者直接停止，嚴禁盲目推薦 full training：
 - **Gate 0 (Sanity)**：檢查 L0 清洗後的高光比例、保留特徵數、ROI 主體不被截斷。
 - **Gate 1 (SfM 幾何)**：只跑 SfM 子集，看 `registered_images`, `points3D`, `inlier ratio` 是否更穩。
 - **Gate 2 (早期優勢)**：只跑 `5000 iter` 短訓練，觀察 PSNR/LPIPS 是否有早期改善。
 - **Gate 3 (Full Train)**：只有通過上述所有早期優勢關卡，才獲准跑 `30000 iter` 並觀測最終成績。
+
+## 2A. 實驗閉環與支線准入規則
+任何新支線、新框架、新 knob map、sandbox probe 或 export / Unity bridge 實驗，都不得只靠對話直覺直接開跑。執行前必須先定義以下欄位，缺任一關鍵欄位時只能列為討論候選，不能進入正式實驗序列：
+- `slot`：此支線插入哪一層，限 `L0 / SfM / trainer / representation / export / Unity runtime / decision / offline learning`。
+- `scope`：此支線是 `formal / sandbox / offline / docs-only`，sandbox 結果不得直接覆寫正式主線。
+- `bottleneck`：本輪要解決的瓶頸層，不能用「看起來更好」代替問題定義。
+- `baseline`：正式比較對象；沒有 baseline 不得宣稱 A/B 勝出。
+- `hypothesis`：預期改善機制，必須能被 Gate 或 review 驗證。
+- `gate`：進入條件、停止條件與是否需要 Gate 0~3、Unity bridge 或 deployment review。
+- `success` / `kill`：何時升格、何時歸檔，避免失敗方向反覆重跑。
+- `artifact`：至少要能落成 JSON / CSV / log / report / scene / PLY 之一；沒有可追溯 artifact 不算正式結果。
+
+閉環完成條件固定為：`experiment_manifest` 或等價 contract 定義本輪目的；run 完成後產生 result / CSV / log；需要 Unity 時補 `deployment_review`；決策層寫出正式 `arbiter_decision / latest_*_decision`；必要時 teacher / learner 只在 offline learning 層吸收；最後由 meta evaluator 判斷是否繼續、停止、換層或升格。未完成上述閉環者，不得寫入正式最佳、不得改預設參數、不得把 sandbox 結論升格為主線。
 
 ## 2B. 正式 A/B 對照最小欄位
 任何被視為「正式可比較」的 A/B 對照，至少必須包含以下三層欄位。若缺欄位，只能算局部觀察，不能升格為正式結論。

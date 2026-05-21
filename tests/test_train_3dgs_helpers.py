@@ -100,6 +100,18 @@ class Train3DGSHelpersTests(unittest.TestCase):
         self.assertIsInstance(updated.mcmc_min_opacity, float)
         self.assertIsInstance(updated.mcmc_noise_lr, float)
 
+    def test_resolve_train_config_falls_back_when_params_json_is_bad(self):
+        cfg = train_3dgs.TrainConfig(**dict(train_3dgs.DEFAULT_TRAIN_PARAMS))
+        with workspace_tempdir("bad_train_params_") as tmp:
+            bad_json = tmp / "train_params.json"
+            bad_json.write_text("{not-json", encoding="utf-8")
+            resolved = train_3dgs._resolve_train_config(cfg, str(bad_json))
+            self.assertIs(resolved, cfg)
+
+            missing = tmp / "missing_train_params.json"
+            resolved = train_3dgs._resolve_train_config(cfg, str(missing))
+            self.assertIs(resolved, cfg)
+
     def test_read_json_robust_supports_utf8_sig(self):
         with workspace_tempdir("train_json_") as tmp:
             payload_path = tmp / "payload.json"
