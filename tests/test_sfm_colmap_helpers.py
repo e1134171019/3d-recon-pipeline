@@ -274,7 +274,8 @@ class SfmColmapHelpersTests(unittest.TestCase):
             stats, warnings = sfm_colmap._read_sparse_model_stats(sparse)
 
         self.assertEqual(stats["cameras_count"], 2)
-        self.assertEqual(stats["images_count"], 2)
+        self.assertEqual(stats["images_count"], 0)
+        self.assertEqual(stats["registered_images_count"], 0)
         self.assertEqual(stats["points3d_count"], 10)
         self.assertEqual(stats["stats_source"], "file_size_fallback")
         self.assertTrue(stats["stats_unreliable"])

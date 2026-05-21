@@ -457,13 +457,13 @@ def _read_sparse_model_stats(sparse_path: Path) -> tuple[dict, list[str]]:
         warnings.append(f"pycolmap read failed, falling back to file-size estimation: {exc}")
 
     cameras_size = (sparse_path / "cameras.bin").stat().st_size if (sparse_path / "cameras.bin").exists() else 0
-    images_size = (sparse_path / "images.bin").stat().st_size if (sparse_path / "images.bin").exists() else 0
     points3d_size = (sparse_path / "points3D.bin").stat().st_size if (sparse_path / "points3D.bin").exists() else 0
 
-    # File-size fallback is only for rough ranking when pycolmap is unavailable.
+    # File-size fallback can only prove non-empty files. It must not estimate
+    # registered image counts because images.bin record sizes are variable.
     stats["cameras_count"] = cameras_size // 64 if cameras_size > 0 else 0
-    stats["images_count"] = images_size // 190000 if images_size > 0 else 0
-    stats["registered_images_count"] = stats["images_count"]
+    stats["images_count"] = 0
+    stats["registered_images_count"] = 0
     stats["points3d_count"] = points3d_size // 148 if points3d_size > 0 else 0
     stats["stats_source"] = "file_size_fallback"
     stats["stats_unreliable"] = True

@@ -35,7 +35,7 @@ def main():
         raise SystemExit(1)
 
     print(f"載入 checkpoint：{ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
     splats   = ckpt["splats"]
     step     = ckpt.get("step", -1)

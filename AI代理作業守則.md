@@ -32,7 +32,7 @@
   - `outputs/agent_decisions/latest_export_decision.json`
 - **Stage contract 最小 schema**：生產層寫出 `latest_*_complete.json` 前必須通過 `src/utils/agent_contracts.py` 的最小驗證；決策層讀取 contract / JSON history 必須走 `D:\agent_test\src\contract_io.py`，不得再在各檔手寫 encoding fallback 或 JSONL fallback。
 - **必填核心欄位**：`schema_version / timestamp / run_id / run_root / stage / status`；`artifacts / metrics / params` 必須是 object，缺值時只能正規化為 `{}`，不得混入 list 或自然語言段落作為正式 contract。
-- 生產層在 `train_complete` / `export_complete` 寫完 `latest_*` event 後，現在會同步觸發 `D:\agent_test\run_phase0.py --contract ...` 嘗試刷新對應 decision outbox。若 hook 失敗，主流程只記警告，不因決策層異常反向中止。
+- 生產層在 `train_complete` / `export_complete` 寫完 `latest_*` event 後，會透過 `AGENT_TEST_RUNNER` 或 `AGENT_TEST_ROOT` 指向的 `run_phase0.py --contract ...` 嘗試刷新對應 decision outbox；未設定時只回報 `agent_runner_unconfigured` 並跳過 hook，不再硬編碼本機路徑。若 hook 失敗，主流程只記警告，不因決策層異常反向中止。
 - 決策層不得再以舊式固定路徑掃描整個 `outputs/` 當主入口；正式依據是 stage contract。
 - 生產層若要讀回 Gate 結果，只能讀 `outputs/agent_decisions/latest_*_decision.json`，不得直接耦合 `D:\agent_test\outputs\phase0\...`。
 - **保留規則**：

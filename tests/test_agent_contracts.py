@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import unittest
 import uuid
@@ -132,6 +133,9 @@ class AgentContractTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"AGENT_TEST_RUNNER": "", "AGENT_TEST_ROOT": r"C:\custom\agent"}, clear=False):
             self.assertEqual(_resolve_agent_runner(), Path(r"C:\custom\agent") / "run_phase0.py")
 
+        with mock.patch.dict("os.environ", {"AGENT_TEST_RUNNER": "", "AGENT_TEST_ROOT": ""}, clear=False):
+            self.assertIsNone(_resolve_agent_runner())
+
     def test_write_decision_hook_audit_persists_warning_payload(self):
         with temp_workspace() as tmp:
             run_root = Path(tmp) / "outputs" / "experiments" / "run1"
@@ -151,7 +155,10 @@ class AgentContractTests(unittest.TestCase):
             self.assertEqual(payload["decision_result"]["reason"], "decision_not_updated")
 
     def test_trigger_decision_layer_runs_real_phase0_contract_loop(self):
-        agent_runner = Path(r"D:\agent_test\run_phase0.py")
+        agent_root = os.environ.get("AGENT_TEST_ROOT", "")
+        if not agent_root:
+            self.skipTest("AGENT_TEST_ROOT is not configured")
+        agent_runner = Path(agent_root) / "run_phase0.py"
         if not agent_runner.exists():
             self.skipTest("decision-layer runner not available on this machine")
 
@@ -183,10 +190,11 @@ class AgentContractTests(unittest.TestCase):
                 run_id="integration_probe",
             )
 
-            result = trigger_decision_layer(
-                project_root=root,
-                contract_path=paths["latest_file"],
-            )
+            with mock.patch.dict("os.environ", {"AGENT_TEST_ROOT": agent_root}, clear=False):
+                result = trigger_decision_layer(
+                    project_root=root,
+                    contract_path=paths["latest_file"],
+                )
 
             self.assertEqual(result["returncode"], 0)
             self.assertEqual(result["status"], "completed")
@@ -204,7 +212,10 @@ class AgentContractTests(unittest.TestCase):
             self.assertIn(payload["decision"], {"hold_export", "continue_train", "approve_export"})
 
     def test_trigger_decision_layer_rejects_tmp_contract_with_formal_project_root(self):
-        agent_runner = Path(r"D:\agent_test\run_phase0.py")
+        agent_root = os.environ.get("AGENT_TEST_ROOT", "")
+        if not agent_root:
+            self.skipTest("AGENT_TEST_ROOT is not configured")
+        agent_runner = Path(agent_root) / "run_phase0.py"
         if not agent_runner.exists():
             self.skipTest("decision-layer runner not available on this machine")
 
@@ -223,7 +234,9 @@ class AgentContractTests(unittest.TestCase):
                 run_id="tmp_contract_probe",
             )
 
-            with mock.patch("src.utils.agent_contracts.subprocess.run") as run_mock:
+            with mock.patch.dict("os.environ", {"AGENT_TEST_ROOT": agent_root}, clear=False), mock.patch(
+                "src.utils.agent_contracts.subprocess.run"
+            ) as run_mock:
                 result = trigger_decision_layer(
                     project_root=Path(__file__).resolve().parents[1],
                     contract_path=paths["latest_file"],

@@ -205,7 +205,7 @@ def _decision_filename_for_stage(stage: str) -> str | None:
     return mapping.get(stage)
 
 
-def _resolve_agent_runner() -> Path:
+def _resolve_agent_runner() -> Path | None:
     runner_override = os.environ.get("AGENT_TEST_RUNNER", "").strip()
     if runner_override:
         return Path(runner_override).expanduser()
@@ -214,7 +214,7 @@ def _resolve_agent_runner() -> Path:
     if root_override:
         return Path(root_override).expanduser() / "run_phase0.py"
 
-    return Path(r"D:\agent_test\run_phase0.py")
+    return None
 
 
 def trigger_decision_layer(
@@ -226,7 +226,11 @@ def trigger_decision_layer(
     if not contract_p.exists():
         return {"status": "skipped", "reason": f"contract_missing:{contract_p}"}
 
-    agent_runner = _resolve_agent_runner().resolve()
+    agent_runner_config = _resolve_agent_runner()
+    if agent_runner_config is None:
+        return {"status": "skipped", "reason": "agent_runner_unconfigured"}
+
+    agent_runner = agent_runner_config.resolve()
     if not agent_runner.exists():
         return {"status": "skipped", "reason": f"agent_runner_missing:{agent_runner}"}
 
