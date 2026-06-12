@@ -14,6 +14,10 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 AGENT_ROOT = Path(os.environ.get("AGENT_TEST_ROOT", r"D:\agent_test"))
+OBSERVER_EVENTS_ROOT = ROOT / "outputs" / "observer_events"
+META_ACTIVITY_LATEST = OBSERVER_EVENTS_ROOT / "latest_meta_activity.json"
+META_ACTIVITY_LOG = OBSERVER_EVENTS_ROOT / "meta_activity.jsonl"
+PROJECT_CATALOG = Path(__file__).resolve().parent / "project_catalog.json"
 
 
 WATCHED_FILES: tuple[tuple[str, Path], ...] = (
@@ -45,6 +49,32 @@ def read_json(path: Path) -> tuple[Any | None, str | None]:
         return json.loads(path.read_text(encoding="utf-8-sig")), None
     except Exception as exc:  # noqa: BLE001 - surfaced in observer payload.
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def read_jsonl_tail(path: Path, limit: int = 40) -> tuple[list[dict[str, Any]], list[str]]:
+    if not path.exists():
+        return [], []
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except Exception as exc:  # noqa: BLE001 - surfaced in observer payload.
+        return [], [f"{type(exc).__name__}: {exc}"]
+
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    start_index = max(0, len(lines) - limit)
+    for offset, line in enumerate(lines[start_index:], start=start_index + 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"line {offset}: {exc}")
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+        else:
+            errors.append(f"line {offset}: non-object JSON record")
+    return records, errors
 
 
 def file_state(label: str, path: Path) -> dict[str, Any]:
@@ -129,6 +159,27 @@ def load_named_json(label: str) -> tuple[Any | None, dict[str, Any]]:
     return data, state
 
 
+def build_meta_activity() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    latest, latest_error = read_json(META_ACTIVITY_LATEST)
+    latest_state = file_state("observer.meta_activity.latest", META_ACTIVITY_LATEST)
+    if latest_error:
+        latest_state["error"] = latest_error
+
+    events, log_errors = read_jsonl_tail(META_ACTIVITY_LOG)
+    log_state = file_state("observer.meta_activity.log", META_ACTIVITY_LOG)
+    if log_errors:
+        log_state["error"] = "; ".join(log_errors[:3])
+
+    meta_activity = {
+        "latest": latest if isinstance(latest, dict) else None,
+        "events": events,
+        "errors": [error for error in [latest_error, *log_errors] if error],
+        "writes_formal_runtime": False,
+        "scope": "observer_only",
+    }
+    return meta_activity, [latest_state, log_state]
+
+
 def build_snapshot() -> dict[str, Any]:
     loaded: dict[str, Any] = {}
     artifacts: list[dict[str, Any]] = []
@@ -160,6 +211,9 @@ def build_snapshot() -> dict[str, Any]:
             state["error"] = error
         artifacts.append(state)
         loaded[label] = data
+
+    meta_activity, meta_artifacts = build_meta_activity()
+    artifacts.extend(meta_artifacts)
 
     learner_scaffold = loaded.get("learner.scaffold")
     learner_baseline = loaded.get("learner.baseline")
@@ -218,6 +272,7 @@ def build_snapshot() -> dict[str, Any]:
         },
         "mcmc": mcmc_inventory if isinstance(mcmc_inventory, dict) else None,
         "deployment_review": deployment if isinstance(deployment, dict) else None,
+        "meta_activity": meta_activity,
         "artifacts": artifacts,
     }
 
@@ -232,6 +287,17 @@ class ObserverHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/snapshot":
             self.send_json(build_snapshot())
+            return
+        if parsed.path == "/api/meta-activity":
+            meta_activity, artifacts = build_meta_activity()
+            self.send_json({"meta_activity": meta_activity, "artifacts": artifacts})
+            return
+        if parsed.path == "/api/catalog":
+            catalog, error = read_json(PROJECT_CATALOG)
+            if error or not isinstance(catalog, dict):
+                self.send_json({"error": error or "invalid catalog"}, status=500)
+                return
+            self.send_json(catalog)
             return
         self.send_static(parsed.path)
 

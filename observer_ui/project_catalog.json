@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "catalog_type": "observer_project_catalog",
+  "scope": "observer_only",
+  "generated_from": [
+    "docs/_governance.md",
+    "專案願景與當前狀態.md",
+    "AI代理作業守則.md"
+  ],
+  "mission": {
+    "id": "mission",
+    "name": "3D Reconstruction Governance Platform",
+    "name_zh": "3D 重建治理平台",
+    "type": "mission",
+    "status": "active",
+    "summary": "從影片建立可驗證、可部署、可追蹤的 Unity Gaussian 地圖，並以正式證據驅動下一步決策。",
+    "owner": "human + meta evaluator"
+  },
+  "repositories": [
+    {
+      "id": "production_repo",
+      "name": "3d-recon-pipeline",
+      "role": "production",
+      "location": "C:\\3d-recon-pipeline",
+      "github": "https://github.com/e1134171019/3d-recon-pipeline"
+    },
+    {
+      "id": "decision_repo",
+      "name": "agent_3D",
+      "role": "decision",
+      "location": "D:\\agent_test",
+      "github": "https://github.com/e1134171019/agent_3D"
+    }
+  ],
+  "architecture": [
+    {
+      "id": "production_system",
+      "name": "Map Production System",
+      "name_zh": "地圖生產系統",
+      "type": "system",
+      "status": "formal",
+      "repository": "production_repo",
+      "summary": "執行影像處理、SfM、3DGS、匯出與 Unity 部署驗證。",
+      "children": [
+        {
+          "id": "l0_pipeline",
+          "name": "L0 Image Pipeline",
+          "name_zh": "L0 影像來源與洗幀",
+          "type": "component",
+          "status": "formal",
+          "path": "src/preprocess_phase0.py",
+          "children": [
+            { "id": "video_extract", "name": "Video extraction", "type": "capability", "status": "formal", "path": "src/preprocess_phase0.py" },
+            { "id": "image_source_gate", "name": "Image source fidelity", "type": "capability", "status": "active", "path": "scripts/build_image_source_quality_report.py" }
+          ]
+        },
+        {
+          "id": "sfm_pipeline",
+          "name": "SfM Geometry",
+          "name_zh": "SfM 幾何建立",
+          "type": "component",
+          "status": "formal",
+          "path": "src/sfm_colmap.py",
+          "children": [
+            { "id": "feature_gate", "name": "Feature / matching gates", "type": "capability", "status": "formal", "path": "src/sfm_colmap.py" },
+            { "id": "sparse_model", "name": "Camera poses / sparse model", "type": "artifact", "status": "formal", "path": "outputs/SfM_models" }
+          ]
+        },
+        {
+          "id": "training_pipeline",
+          "name": "3DGS Training",
+          "name_zh": "3DGS 訓練系統",
+          "type": "component",
+          "status": "formal",
+          "path": "src/train_3dgs.py",
+          "children": [
+            { "id": "mcmc_runtime", "name": "MCMC formal runtime", "type": "capability", "status": "formal", "path": "src/train_3dgs.py" },
+            { "id": "training_metrics", "name": "PSNR / SSIM / LPIPS evaluation", "type": "capability", "status": "formal", "path": "outputs/reports" }
+          ]
+        },
+        {
+          "id": "unity_pipeline",
+          "name": "Unity Deployment Chain",
+          "name_zh": "Unity 部署鏈",
+          "type": "component",
+          "status": "active",
+          "path": "src/export_ply_unity.py",
+          "children": [
+            { "id": "ply_export", "name": "Unity-compatible PLY export", "type": "capability", "status": "formal", "path": "src/export_ply_unity.py" },
+            { "id": "unity_import", "name": "Unity import / scene binding", "type": "capability", "status": "formal", "path": "unity_setup" },
+            { "id": "deployment_review", "name": "Deployment review", "type": "gate", "status": "active", "path": "unity_setup/CaptureUnityDeploymentReview.cs" },
+            { "id": "reference_gate", "name": "Unity Reference Gate", "type": "gate", "status": "planned", "path": "scripts/build_unity_validation_report.py" }
+          ]
+        },
+        {
+          "id": "observer_system",
+          "name": "Observer UI",
+          "name_zh": "唯讀觀測系統",
+          "type": "component",
+          "status": "active",
+          "path": "observer_ui",
+          "children": [
+            { "id": "observer_backend", "name": "Read-only observer backend", "type": "component", "status": "active", "path": "observer_ui/server.py" },
+            { "id": "observer_vue", "name": "Vue console", "type": "component", "status": "active", "path": "observer_ui/static" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "decision_system",
+      "name": "Decision & Learning System",
+      "name_zh": "決策與學習系統",
+      "type": "system",
+      "status": "formal",
+      "repository": "decision_repo",
+      "summary": "只讀正式 contract，產生候選、唯一裁決、回饋與離線學習報告。",
+      "children": [
+        {
+          "id": "formal_decision_runtime",
+          "name": "Formal Decision Runtime",
+          "name_zh": "正式決策執行層",
+          "type": "component",
+          "status": "formal",
+          "path": "src",
+          "children": [
+            { "id": "contract_intake", "name": "Contract intake", "type": "component", "status": "formal", "path": "src/contract_io.py" },
+            { "id": "candidate_pool", "name": "Candidate pool", "type": "component", "status": "formal", "path": "src/candidate_pool.py" },
+            { "id": "arbiter", "name": "Single arbiter", "type": "component", "status": "formal", "path": "src/arbiter.py" },
+            { "id": "shared_decision", "name": "Shared decision mapper", "type": "component", "status": "formal", "path": "src/shared_decision_mapper.py" }
+          ]
+        },
+        {
+          "id": "map_strategy_pack",
+          "name": "Map Building Strategy Pack",
+          "name_zh": "地圖建立策略包",
+          "type": "component",
+          "status": "formal",
+          "path": "agents/phase0",
+          "children": [
+            { "id": "pointcloud_validator", "name": "PointCloud Validator", "type": "component", "status": "formal", "path": "agents/phase0/pointcloud_validator.py" },
+            { "id": "map_validator", "name": "Map Validator", "type": "component", "status": "formal", "path": "agents/phase0/map_validator.py" },
+            { "id": "production_param_gate", "name": "Production Param Gate", "type": "component", "status": "formal", "path": "agents/phase0/production_param_gate.py" }
+          ]
+        },
+        {
+          "id": "feedback_audit",
+          "name": "Feedback & Audit",
+          "name_zh": "回饋與審計",
+          "type": "component",
+          "status": "formal",
+          "path": "src/outcome_feedback.py",
+          "children": [
+            { "id": "current_state", "name": "Current state", "type": "artifact", "status": "formal", "path": "src/current_state.py" },
+            { "id": "outcome_feedback", "name": "Outcome feedback", "type": "artifact", "status": "formal", "path": "src/outcome_feedback.py" },
+            { "id": "learning_curve", "name": "Learning curve", "type": "artifact", "status": "formal", "path": "outputs/phase0" }
+          ]
+        },
+        {
+          "id": "offline_learning",
+          "name": "Offline Learning",
+          "name_zh": "離線學習",
+          "type": "component",
+          "status": "offline",
+          "path": "adapters",
+          "children": [
+            { "id": "ollama_teacher", "name": "Ollama / Qwen teacher", "type": "component", "status": "offline", "path": "adapters/qwen_teacher.py" },
+            { "id": "historical_backfill", "name": "Historical backfill", "type": "component", "status": "offline", "path": "adapters/historical_run_backfill.py" },
+            { "id": "pytorch_learner", "name": "PyTorch learner", "type": "component", "status": "offline", "path": "adapters/pytorch_decision_model.py" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "governance_system",
+      "name": "Governance",
+      "name_zh": "正式治理",
+      "type": "system",
+      "status": "formal",
+      "repository": "production_repo",
+      "summary": "固定正式來源、跨層邊界、實驗升格與 sandbox 隔離規則。",
+      "children": [
+        { "id": "formal_docs", "name": "Formal documentation set", "type": "resource", "status": "formal", "path": "docs/_governance.md" },
+        { "id": "experiment_history", "name": "Experiment history", "type": "resource", "status": "formal", "path": "docs/實驗歷史與決策日誌.md" },
+        { "id": "gate_policy", "name": "Gate policy", "type": "resource", "status": "active", "path": "configs/gate_policy.yaml" }
+      ]
+    },
+    {
+      "id": "resources_system",
+      "name": "Runtime Resources",
+      "name_zh": "執行資源",
+      "type": "system",
+      "status": "resource",
+      "summary": "兩個倉庫共同依賴的資料、運算與部署資源。",
+      "children": [
+        { "id": "video_frames", "name": "Video / Frames", "type": "resource", "status": "resource", "path": "data" },
+        { "id": "colmap_resource", "name": "COLMAP / Sparse models", "type": "resource", "status": "resource", "path": "outputs/SfM_models" },
+        { "id": "gpu_cuda", "name": "GPU / CUDA", "type": "resource", "status": "resource" },
+        { "id": "unity_bendviewer", "name": "Unity BendViewer", "type": "resource", "status": "resource" },
+        { "id": "ollama_resource", "name": "Local Ollama", "type": "resource", "status": "resource" }
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "id": "sfm_event_contract",
+      "direction": "production_to_decision",
+      "producer": "production_repo",
+      "consumer": "decision_repo",
+      "name": "SfM complete event",
+      "artifact": "outputs/agent_events/latest_sfm_complete.json",
+      "purpose": "傳遞 SfM 幾何事實與 artifacts。"
+    },
+    {
+      "id": "train_event_contract",
+      "direction": "production_to_decision",
+      "producer": "production_repo",
+      "consumer": "decision_repo",
+      "name": "Train complete event",
+      "artifact": "outputs/agent_events/latest_train_complete.json",
+      "purpose": "傳遞訓練指標與 checkpoint 結果。"
+    },
+    {
+      "id": "export_event_contract",
+      "direction": "production_to_decision",
+      "producer": "production_repo",
+      "consumer": "decision_repo",
+      "name": "Export complete event",
+      "artifact": "outputs/agent_events/latest_export_complete.json",
+      "purpose": "傳遞 PLY、Unity 匯入與 deployment review 證據。"
+    },
+    {
+      "id": "formal_decision_contract",
+      "direction": "decision_to_production",
+      "producer": "decision_repo",
+      "consumer": "production_repo",
+      "name": "Formal stage decision",
+      "artifact": "outputs/agent_decisions/latest_*_decision.json",
+      "purpose": "回寫唯一正式 next step。"
+    },
+    {
+      "id": "feedback_contract",
+      "direction": "human_to_offline",
+      "producer": "human",
+      "consumer": "decision_repo",
+      "name": "Outcome feedback",
+      "artifact": "outcome_feedback.json / deployment_review.json",
+      "purpose": "把人工與後續結果轉成可學習的正式回饋。"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "formal_mcmc",
+      "group": "formal",
+      "name": "MCMC formal baseline",
+      "status": "active",
+      "summary": "1M + antialiased + MCMCStrategy @ 30000，LPIPS 0.189117。",
+      "repository": "production_repo"
+    },
+    {
+      "id": "image_source_fidelity",
+      "group": "formal",
+      "name": "Image Source Fidelity",
+      "status": "active",
+      "summary": "4K PNG 有 Unity 正向訊號，但不得覆寫離線最佳。",
+      "repository": "production_repo"
+    },
+    {
+      "id": "unity_reference_gate",
+      "group": "planned",
+      "name": "Unity Reference Gate",
+      "status": "planned",
+      "summary": "同視角比較 reference、原生 render 與 Unity render。",
+      "repository": "production_repo"
+    },
+    {
+      "id": "scaffold_bridge",
+      "group": "sandbox",
+      "name": "Scaffold-GS bridge-first",
+      "status": "sandbox",
+      "summary": "offline 指標強，但 Unity bridge 尚未通過，不可升正式主線。",
+      "repository": "production_repo"
+    },
+    {
+      "id": "offline_teacher_learner",
+      "group": "offline",
+      "name": "Teacher / Learner improvement",
+      "status": "offline",
+      "summary": "持續吸收正式 feedback；不得接管 formal runtime。",
+      "repository": "decision_repo"
+    },
+    {
+      "id": "archived_mcmc_knobs",
+      "group": "archived",
+      "name": "Archived MCMC small knobs",
+      "status": "archived",
+      "summary": "ssim_lambda、depth_loss、with_ut、bilateral grid、min_opacity、noise_lr、random_bkgd。",
+      "repository": "production_repo"
+    }
+  ]
+}

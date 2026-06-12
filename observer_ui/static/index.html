@@ -8,115 +8,483 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   </head>
   <body>
-    <div id="app" v-cloak>
-      <header class="hero">
-        <div>
-          <p class="eyebrow">Artifact-first Observer</p>
-          <h1>3D Recon Mission Control</h1>
-          <p class="sub">
-            Vue 只讀正式 event / decision / report。Ollama 是 teacher，不控制 UI 或 runtime。
-          </p>
-        </div>
-        <div class="health-card" :class="{ stale: isStale }">
-          <span class="dot"></span>
-          <strong>{{ healthLabel }}</strong>
-          <small>{{ snapshot?.observer?.heartbeat || 'no heartbeat' }}</small>
-        </div>
-      </header>
-
-      <main class="grid">
-        <section class="panel flow-panel">
-          <div class="panel-head">
-            <p class="eyebrow">Formal Runtime</p>
-            <h2>Stage Flow</h2>
+    <div id="app" v-cloak class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">3D</span>
+          <div>
+            <strong>Recon Observer</strong>
+            <small>Artifact-first console</small>
           </div>
-          <div class="stage-flow">
-            <article v-for="stage in stages" :key="stage.key" class="stage-card">
-              <span class="stage-index">{{ stage.label }}</span>
-              <h3>{{ eventFor(stage.key).run_id || 'no event' }}</h3>
-              <p>Status: <strong>{{ eventFor(stage.key).status || 'unknown' }}</strong></p>
-              <p>Decision: <strong>{{ decisionFor(stage.key).decision || 'none' }}</strong></p>
-              <p>Next: {{ decisionFor(stage.key).next_action || 'manual review' }}</p>
+        </div>
+
+        <nav class="side-nav" aria-label="Observer views">
+          <button
+            v-for="item in navItems"
+            :key="item.id"
+            type="button"
+            :class="{ active: activeView === item.id }"
+            @click="activeView = item.id"
+          >
+            <span>{{ item.icon }}</span>
+            <div>
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.note }}</small>
+            </div>
+          </button>
+        </nav>
+
+        <div class="sidebar-boundary">
+          <span class="boundary-icon">R/O</span>
+          <div>
+            <strong>唯讀觀測層</strong>
+            <small>不寫入 formal decision</small>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="kicker">{{ activeViewLabel.eyebrow }}</p>
+            <h1>{{ activeViewLabel.title }}</h1>
+          </div>
+          <div class="topbar-status">
+            <div class="traffic-pill">
+              <span class="traffic-dot" :class="metaStatusClass"></span>
+              <div>
+                <small>Last traffic</small>
+                <strong>{{ flowFrom }} → {{ flowTo }}</strong>
+              </div>
+            </div>
+            <div class="health-pill" :class="{ stale: isStale }">
+              <span></span>
+              <div>
+                <strong>{{ healthLabel }}</strong>
+                <small>{{ shortTime(snapshot?.observer?.heartbeat) }}</small>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section v-if="activeView === 'project'" class="system-map-view">
+          <section class="signal-map-card signal-map-full">
+            <header class="signal-map-head">
+              <div>
+                <p class="kicker">Live system landscape</p>
+                <h2>{{ catalog?.mission?.name_zh || '3D 重建治理平台' }}</h2>
+                <p>{{ catalog?.mission?.summary || '從生產證據到決策與離線學習的雙倉閉環。' }}</p>
+              </div>
+              <div class="signal-map-route">
+                <span>{{ activeSignalRoute ? '目前訊號' : '系統狀態' }}</span>
+                <strong v-if="activeSignalRoute">
+                  {{ activeSignalRoute.from.label }} → {{ activeSignalRoute.to.label }}
+                </strong>
+                <strong v-else>等待下一筆活動</strong>
+                <small>{{ activeSignalRoute?.channel || 'observer-only / read-only' }}</small>
+              </div>
+            </header>
+
+            <div class="signal-canvas">
+              <div class="signal-grid" aria-hidden="true"></div>
+              <div class="signal-zone zone-production" aria-hidden="true">
+                <span>01 / PRODUCTION</span>
+                <strong>生產層：影像 → Unity → Reference Gate</strong>
+              </div>
+              <div class="signal-zone zone-decision" aria-hidden="true">
+                <span>02 / FORMAL DECISION</span>
+                <strong>正式證據 → 候選 → 唯一裁決 → Decision Outbox</strong>
+              </div>
+              <div class="signal-zone zone-sidecar" aria-hidden="true">
+                <span>03 / OBSERVER & OFFLINE</span>
+                <strong>唯讀觀測、人工回饋、Teacher / Learner</strong>
+              </div>
+              <svg class="signal-wires" viewBox="0 0 1400 780" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <filter id="signal-glow" x="-80%" y="-80%" width="260%" height="260%">
+                    <feGaussianBlur stdDeviation="4" result="blur"></feGaussianBlur>
+                    <feMerge>
+                      <feMergeNode in="blur"></feMergeNode>
+                      <feMergeNode in="SourceGraphic"></feMergeNode>
+                    </feMerge>
+                  </filter>
+                </defs>
+                <path
+                  v-for="edge in renderedSignalEdges"
+                  :id="`signal-path-${edge.id}`"
+                  :key="edge.id"
+                  :d="edge.path"
+                  class="signal-edge"
+                  :class="[`signal-${edge.kind}`, signalEdgeState(edge)]"
+                ></path>
+                <circle v-if="activeSignalRoute" class="signal-packet" r="7" filter="url(#signal-glow)">
+                  <animateMotion dur="1.65s" repeatCount="indefinite">
+                    <mpath :href="`#signal-path-${activeSignalRoute.edgeId}`"></mpath>
+                  </animateMotion>
+                </circle>
+              </svg>
+
+              <article
+                v-for="node in signalNodes"
+                :key="node.id"
+                class="signal-node"
+                :class="[`signal-tone-${node.tone}`, signalNodeState(node)]"
+                :style="signalNodeStyle(node)"
+              >
+                <span>{{ node.code }}</span>
+                <div>
+                  <strong>{{ node.label }}</strong>
+                  <small>{{ node.note }}</small>
+                </div>
+              </article>
+            </div>
+            <footer class="signal-map-footer">
+              <span><i class="legend-line legend-formal"></i>正式 artifact / contract</span>
+              <span><i class="legend-line legend-decision"></i>decision 回寫</span>
+              <span><i class="legend-line legend-sidecar"></i>observer / offline sidecar</span>
+              <strong>{{ signalNodes.length }} 個節點；只有最新 A → B 路徑會做動</strong>
+            </footer>
+          </section>
+        </section>
+
+        <section v-else-if="activeView === 'contracts'" class="view-stack">
+          <div class="contract-map-card">
+            <header class="section-head">
+              <div>
+                <p class="kicker">Cross-repository contract map</p>
+                <h2>兩個倉庫如何組成一個系統</h2>
+              </div>
+              <span>Repository 不直接互相定義真相，只透過正式 contract 溝通</span>
+            </header>
+
+            <div class="repo-map">
+              <article class="repo-card repo-production">
+                <span>Production Repository</span>
+                <h3>{{ repoFor('production_repo')?.name }}</h3>
+                <p>執行 SfM、Train、Export、Unity；產生正式事實。</p>
+                <small>{{ repoFor('production_repo')?.location }}</small>
+              </article>
+              <div class="contract-bus">
+                <strong>Formal Contract Bus</strong>
+                <small>唯一跨倉接口</small>
+              </div>
+              <article class="repo-card repo-decision">
+                <span>Decision Repository</span>
+                <h3>{{ repoFor('decision_repo')?.name }}</h3>
+                <p>讀取事實、產生候選、由 Arbiter 裁決下一步。</p>
+                <small>{{ repoFor('decision_repo')?.location }}</small>
+              </article>
+            </div>
+
+            <div class="contract-list">
+              <article v-for="contract in catalog?.contracts || []" :key="contract.id" :class="`direction-${contract.direction}`">
+                <div class="contract-direction">
+                  <span>{{ contractActor(contract.producer) }}</span>
+                  <i></i>
+                  <span>{{ contractActor(contract.consumer) }}</span>
+                </div>
+                <div>
+                  <strong>{{ contract.name }}</strong>
+                  <small class="mono">{{ contract.artifact }}</small>
+                </div>
+                <p>{{ contract.purpose }}</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section v-else-if="activeView === 'experiments'" class="view-stack">
+          <div class="experiment-board">
+            <header class="section-head">
+              <div>
+                <p class="kicker">Research portfolio</p>
+                <h2>正式主線、Sandbox 與歷史方向分流</h2>
+              </div>
+              <span>實驗狀態不等於 Runtime 執行狀態</span>
+            </header>
+            <div class="experiment-columns">
+              <section v-for="group in experimentGroups" :key="group.id" :class="`experiment-group group-${group.id}`">
+                <header>
+                  <div>
+                    <span>{{ group.label }}</span>
+                    <strong>{{ group.title }}</strong>
+                  </div>
+                  <b>{{ group.items.length }}</b>
+                </header>
+                <button
+                  v-for="item in group.items"
+                  :key="item.id"
+                  type="button"
+                  :class="{ selected: selectedExperimentId === item.id }"
+                  @click="selectedExperimentId = item.id"
+                >
+                  <span>{{ item.status }}</span>
+                  <strong>{{ item.name }}</strong>
+                  <small>{{ item.summary }}</small>
+                  <em>{{ repoFor(item.repository)?.name }}</em>
+                </button>
+              </section>
+            </div>
+            <div class="experiment-detail">
+              <div>
+                <span>{{ selectedExperiment.group }} / {{ selectedExperiment.status }}</span>
+                <h3>{{ selectedExperiment.name }}</h3>
+                <p>{{ selectedExperiment.summary }}</p>
+              </div>
+              <div>
+                <span>治理判斷</span>
+                <strong>{{ experimentGovernance(selectedExperiment) }}</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section v-else-if="activeView === 'overview'" class="view-stack">
+          <div class="summary-strip">
+            <article>
+              <span>正式階段</span>
+              <strong>Phase 1</strong>
+              <small>地圖建立進行中</small>
+            </article>
+            <article>
+              <span>離線最佳 LPIPS</span>
+              <strong>{{ bestLpips }}</strong>
+              <small>{{ bestRun }}</small>
+            </article>
+            <article>
+              <span>目前 Train LPIPS</span>
+              <strong>{{ currentTrainLpips }}</strong>
+              <small>{{ eventFor('train').run_id || 'no train event' }}</small>
+            </article>
+            <article :class="`summary-${referenceNode.status}`">
+              <span>目前核心瓶頸</span>
+              <strong>{{ referenceNode.stateLabel }}</strong>
+              <small>Unity Reference Gate</small>
             </article>
           </div>
+
+          <div class="overview-layout">
+            <section class="topology-card">
+              <header class="section-head">
+                <div>
+                  <p class="kicker">Production topology</p>
+                  <h2>影像到 Unity 的正式主線</h2>
+                </div>
+                <div class="status-legend">
+                  <span class="status-ready">完成</span>
+                  <span class="status-review">待驗證</span>
+                  <span class="status-blocked">阻塞</span>
+                  <span class="status-missing">未執行</span>
+                </div>
+              </header>
+
+              <div class="topology-canvas">
+                <div class="canvas-grid" aria-hidden="true"></div>
+                <div class="flow-lane production-lane">
+                  <div class="lane-label">
+                    <strong>Production</strong>
+                    <small>粗線：實際資料處理</small>
+                  </div>
+                  <div class="node-chain">
+                    <template v-for="(node, index) in productionNodes" :key="node.id">
+                      <button
+                        type="button"
+                        class="flow-node-card"
+                        :class="[`node-${node.status}`, { selected: selectedNodeId === node.id, pulsing: pulseNodeId === node.id }]"
+                        @click="selectedNodeId = node.id"
+                      >
+                        <span class="node-code">{{ node.step }}</span>
+                        <div>
+                          <small>{{ node.kicker }}</small>
+                          <strong>{{ node.title }}</strong>
+                          <em>{{ node.stateLabel }}</em>
+                        </div>
+                      </button>
+                      <div v-if="index < productionNodes.length - 1" class="chain-edge" :class="`edge-${node.status}`">
+                        <i></i>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="formal-bridge">
+                  <span>run / log / event</span>
+                  <i></i>
+                  <strong>正式證據與決策閉環</strong>
+                  <i></i>
+                  <span>latest_*_decision</span>
+                </div>
+
+                <div class="flow-lane evidence-lane">
+                  <div class="lane-label">
+                    <strong>Evidence → Decision</strong>
+                    <small>正式 contract 與唯一裁決</small>
+                  </div>
+                  <div class="evidence-chain">
+                    <template v-for="(node, index) in evidenceDecisionNodes" :key="node.id">
+                      <button
+                        type="button"
+                        class="flow-node-card compact"
+                        :class="[`node-${node.status}`, { selected: selectedNodeId === node.id, pulsing: pulseNodeId === node.id }]"
+                        @click="selectedNodeId = node.id"
+                      >
+                        <span class="node-code">{{ node.step }}</span>
+                        <div>
+                          <small>{{ node.kicker }}</small>
+                          <strong>{{ node.title }}</strong>
+                          <em>{{ node.stateLabel }}</em>
+                        </div>
+                      </button>
+                      <div v-if="index < evidenceDecisionNodes.length - 1" class="chain-edge artifact-edge">
+                        <i></i>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="sidecar-zone">
+                  <div class="lane-label">
+                    <strong>Observer / Offline Sidecars</strong>
+                    <small>點線邊界：可讀取，不具控制權</small>
+                  </div>
+                  <div class="sidecar-row">
+                    <button
+                      v-for="node in sidecarNodes"
+                      :key="node.id"
+                      type="button"
+                      class="sidecar-chip"
+                      :class="[`node-${node.status}`, { selected: selectedNodeId === node.id, pulsing: pulseNodeId === node.id }]"
+                      @click="selectedNodeId = node.id"
+                    >
+                      <span>{{ node.step }}</span>
+                      <div>
+                        <strong>{{ node.title }}</strong>
+                        <small>{{ node.stateLabel }}</small>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <aside class="inspector">
+              <div class="inspector-head">
+                <p class="kicker">Node inspector</p>
+                <span :class="`inspector-status node-${selectedNode.status}`">{{ selectedNode.stateLabel }}</span>
+              </div>
+              <span class="inspector-code">{{ selectedNode.step }}</span>
+              <h2>{{ selectedNode.title }}</h2>
+              <p class="inspector-subtitle">{{ selectedNode.subtitle }}</p>
+
+              <dl>
+                <div>
+                  <dt>責任</dt>
+                  <dd>{{ selectedNode.detail }}</dd>
+                </div>
+                <div>
+                  <dt>正式依據</dt>
+                  <dd class="mono">{{ selectedNode.evidence }}</dd>
+                </div>
+                <div>
+                  <dt>治理邊界</dt>
+                  <dd>{{ selectedNode.boundary || '只透過正式 artifact 傳遞結果。' }}</dd>
+                </div>
+              </dl>
+
+              <div class="inspector-callout" :class="`callout-${referenceNode.status}`">
+                <span>Project completion rule</span>
+                <strong>Train completed ≠ Project completed</strong>
+                <small>{{ referenceNode.detail }}</small>
+              </div>
+            </aside>
+          </div>
         </section>
 
-        <section class="panel metric-panel">
-          <div class="panel-head">
-            <p class="eyebrow">Current Benchmark</p>
-            <h2>MCMC / Unity</h2>
-          </div>
-          <div class="metric-grid">
-            <div class="metric">
-              <span>Best LPIPS</span>
-              <strong>{{ bestLpips }}</strong>
-            </div>
-            <div class="metric">
-              <span>Best Run</span>
-              <strong>{{ bestRun }}</strong>
-            </div>
-            <div class="metric wide">
-              <span>Deployment Review</span>
-              <strong>{{ deploymentVerdict }}</strong>
-              <small>{{ deploymentNote }}</small>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel teacher-panel">
-          <div class="panel-head">
-            <p class="eyebrow">Offline Learning</p>
-            <h2>Teacher / Learner</h2>
-          </div>
-          <div class="two-col">
-            <div class="card-line">
-              <span>Teacher</span>
-              <strong>{{ snapshot?.teacher?.status || 'unknown' }}</strong>
-              <small>{{ snapshot?.teacher?.teacher_count ?? '-' }} labels</small>
-            </div>
-            <div class="card-line warning" v-if="snapshot?.learner?.overfit_warning">
-              <span>Learner Warning</span>
-              <strong>possible overfit</strong>
-              <small>{{ snapshot?.learner?.warning_reason }}</small>
-            </div>
-            <div class="card-line">
-              <span>Dataset</span>
-              <strong>{{ learner.dataset_size ?? '-' }}</strong>
-              <small>feature_dim {{ learner.feature_dim ?? '-' }}</small>
-            </div>
-            <div class="card-line">
-              <span>LOO Accuracy</span>
-              <strong>{{ percent(learner.leave_one_out_accuracy) }}</strong>
-              <small>{{ learner.positive_count ?? '-' }} positive / {{ learner.negative_count ?? '-' }} negative</small>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel artifact-panel">
-          <div class="panel-head">
-            <p class="eyebrow">Watched Artifacts</p>
-            <h2>Read-only Inputs</h2>
-          </div>
-          <div class="artifact-list">
-            <article v-for="item in artifacts" :key="item.label" class="artifact-row" :class="{ missing: !item.exists }">
+        <section v-else-if="activeView === 'stages'" class="view-stack">
+          <div class="table-card">
+            <header class="section-head">
               <div>
+                <p class="kicker">Formal runtime</p>
+                <h2>Stage execution</h2>
+              </div>
+            </header>
+            <div class="runtime-table">
+              <article v-for="stage in stages" :key="stage.key">
+                <span class="stage-badge">{{ stage.label }}</span>
+                <div class="runtime-title">
+                  <strong>{{ stage.name }}</strong>
+                  <small>{{ eventFor(stage.key).run_id || 'no event' }}</small>
+                </div>
+                <div>
+                  <span>Status</span>
+                  <strong>{{ eventFor(stage.key).status || 'unknown' }}</strong>
+                </div>
+                <div>
+                  <span>Decision</span>
+                  <strong>{{ decisionFor(stage.key).decision || 'none' }}</strong>
+                </div>
+                <div>
+                  <span>Next</span>
+                  <strong>{{ decisionFor(stage.key).next_action || 'manual review' }}</strong>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section v-else-if="activeView === 'activity'" class="view-stack">
+          <div class="activity-layout">
+            <section class="table-card">
+              <header class="section-head">
+                <div>
+                  <p class="kicker">Dialogue AI</p>
+                  <h2>Activity stream</h2>
+                </div>
+              </header>
+              <div class="activity-stream">
+                <article v-for="event in metaEvents.slice().reverse()" :key="event.event_id" :class="`event-${event.status}`">
+                  <time>{{ shortTime(event.timestamp) }}</time>
+                  <span></span>
+                  <div>
+                    <strong>{{ event.title }}</strong>
+                    <small>{{ event.from_actor || event.actor }} → {{ event.to_actor || 'observer_ui' }}</small>
+                    <p>{{ event.summary }}</p>
+                  </div>
+                </article>
+              </div>
+            </section>
+            <aside class="traffic-card">
+              <p class="kicker">Latest route</p>
+              <div class="traffic-route">
+                <strong>{{ flowFrom }}</strong>
+                <i><span></span></i>
+                <strong>{{ flowTo }}</strong>
+              </div>
+              <span>{{ flowChannel }}</span>
+              <h3>{{ latestMetaActivity.title || 'Waiting for activity' }}</h3>
+              <p>{{ latestMetaActivity.summary || 'Observer-only events appear here.' }}</p>
+            </aside>
+          </div>
+        </section>
+
+        <section v-else class="view-stack">
+          <div class="table-card">
+            <header class="section-head">
+              <div>
+                <p class="kicker">Read-only evidence</p>
+                <h2>Watched artifacts</h2>
+              </div>
+              <span>{{ artifacts.filter((item) => item.exists).length }} / {{ artifacts.length }} available</span>
+            </header>
+            <div class="artifact-table">
+              <article v-for="item in artifacts" :key="item.label" :class="{ missing: !item.exists }">
+                <span class="artifact-state"></span>
                 <strong>{{ item.label }}</strong>
                 <small>{{ item.path || 'not found' }}</small>
-              </div>
-              <span>{{ item.exists ? formatAge(item.age_seconds) : 'missing' }}</span>
-            </article>
+                <time>{{ item.exists ? formatAge(item.age_seconds) : 'missing' }}</time>
+              </article>
+            </div>
           </div>
-        </section>
-
-        <section class="panel guardrail-panel">
-          <div class="panel-head">
-            <p class="eyebrow">Guardrail</p>
-            <h2>No Direct Writes</h2>
-          </div>
-          <p>
-            UI feedback buttons are intentionally disabled in V0. Any future pass/fail or deployment note must call
-            a formal CLI and produce feedback artifacts before teacher / learner can absorb it.
-          </p>
         </section>
       </main>
     </div>
