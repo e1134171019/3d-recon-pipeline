@@ -28,8 +28,6 @@ KIND_CHOICES = (
     "final_summary",
 )
 STATUS_CHOICES = ("running", "ok", "warning", "failed")
-
-
 def local_now() -> datetime:
     return datetime.now().astimezone()
 
@@ -102,6 +100,7 @@ def build_event_from_mapping(values: dict[str, Any]) -> dict[str, Any]:
         "from_actor": values.get("from_actor") or actor,
         "to_actor": values.get("to_actor") or "observer_ui",
         "channel": values.get("channel") or "observer_event",
+        "target_node": values.get("target_node") or "",
         "kind": kind,
         "status": status,
         "title": title,
@@ -126,6 +125,7 @@ def build_event(args: argparse.Namespace) -> dict[str, Any]:
         "from_actor": args.from_actor,
         "to_actor": args.to_actor,
         "channel": args.channel,
+        "target_node": args.target_node,
         "event_id": args.event_id,
         "related_artifact": args.related_artifact,
     }
@@ -157,6 +157,7 @@ def main() -> int:
     parser.add_argument("--from-actor", default="")
     parser.add_argument("--to-actor", default="")
     parser.add_argument("--channel", default="observer_event")
+    parser.add_argument("--target-node", default="", help="Observer catalog node id to highlight.")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--related-artifact", action="append", default=[])
     parser.add_argument("--json-file", default="", help="Read UTF-8 JSON object and merge CLI overrides.")

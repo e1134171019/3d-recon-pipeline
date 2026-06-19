@@ -234,6 +234,7 @@
   - Vue frontend 是否啟動
   - heartbeat 是否新於本輪任務開始時間
   - 是否正在監聽正式 artifact：`outputs/agent_events/latest_*_complete.json`、`outputs/agent_decisions/latest_*_decision.json`、`outputs/reports/*.json`、`deployment_review.json`、teacher / learner report
+- **對話框 AI 執行期間必須送出活動生命週期。** 只要本輪會讀正式文件、修改程式、執行測試、操作 training / SfM / Unity、或審查 teacher / learner / agent，對話框 AI 必須透過 `observer_ui/record_activity.py` 寫入 observer-only activity：開始時為 `task_start / running`，重要目標切換時更新一筆 `running` 並指定 `target_node`，完成時寫 `final_summary / ok|warning|failed`。這些事件只供 Vue 同步可視化，不得被視為 formal event、decision 或 outcome feedback。
 - **UI 未啟動時不得假設可視化已同步。** 若 observer UI 未啟動，對話框 AI 必須明確回報「observer_ui 未啟動」；長時間任務可由 Codex 依終端規則啟動 observer service，或提示使用者啟動，但不得讓 Ollama/Qwen 代為控制。
 - **閉環資料流固定為 artifact-first。** 正式流程應為：`run/log/event -> observer backend -> Vue 顯示 -> human feedback -> formal feedback artifact -> teacher/learner 離線吸收 -> meta review`。禁止改成 `Ollama -> Vue -> decision`。
 - **人工 UI 操作必須落成正式 artifact。** 若 Vue 提供 pass/fail、human review、deployment note 或標籤按鈕，只能呼叫正式 CLI 或寫入正式 feedback / deployment review artifact；後續由 teacher / learner 離線吸收，不得直接改 formal runtime。

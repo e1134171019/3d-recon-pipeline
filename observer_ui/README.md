@@ -35,7 +35,7 @@ For a non-interactive smoke check:
 .\.venv\Scripts\python.exe observer_ui\server.py --check
 ```
 
-To make the Vue dashboard move when the dialogue AI is working, write an observer-only activity event:
+The dialogue AI must emit observer-only activity at task start, important progress transitions, and completion. This makes the Vue dashboard move during work without changing formal runtime:
 
 ```powershell
 .\.venv\Scripts\python.exe observer_ui\record_activity.py `
@@ -46,6 +46,7 @@ To make the Vue dashboard move when the dialogue AI is working, write an observe
   --from-actor "dialogue_ai" `
   --to-actor "observer_ui" `
   --channel "observer_event"
+  --target-node "formal_docs"
 ```
 
 For Chinese text, prefer JSON input instead of command-line string arguments. This avoids Windows argv encoding drift:
@@ -79,8 +80,11 @@ The Activity view renders these fields as a live `FROM -> TO` route so it is cle
 
 The main UI uses a workflow-console layout:
 
-- `System Map` is one large project-wide canvas with 21 concrete production, decision, governance, sandbox, observer, and offline-learning nodes
-- `Live signal layer` keeps the architecture fixed and animates only the latest `from_actor -> to_actor` observer route
+- `Architecture` is an automatic presentation canvas. Idle mode shows only the four system boundaries.
+- A fresh observer activity automatically drills through `system -> governance block -> child node` based on `target_node`; no click is required.
+- The right-side panel automatically shows the current action, hierarchy path, technical path, sender/receiver route, status, and formal-runtime impact.
+- A completed activity returns to the four-system overview after the result has been shown. A stale `running` activity also returns after 90 seconds without a fresh event.
+- `Live signal layer` animates only the latest `from_actor -> target_node` observer route.
 - `Contract Map` shows the only formal cross-repository interfaces
 - `Experiment Tree` separates formal, planned, sandbox, offline, and archived research directions
 - `Runtime` shows only the current execution state
@@ -89,6 +93,14 @@ The main UI uses a workflow-console layout:
 - observer, teacher, learner, dialogue AI, and human feedback remain visibly outside the formal control chain
 
 The live signal layer does not infer control authority from animation. Source and receiver nodes enlarge while a task is running and for 60 seconds after its result; one packet moves along only that observer route. Formal state still comes only from contracts, decisions, reports, and deployment review artifacts.
+
+Dialogue AI activity lifecycle:
+
+1. Task start: write `kind=task_start`, `status=running`, and the current `target_node`.
+2. Important progress change: write another `status=running` event with the new target node.
+3. Completion or failure: write `kind=final_summary`, with `status=ok|warning|failed`.
+
+This instrumentation is mandatory for dialogue-AI work that changes or evaluates the project. It does not mean the Observer controls the task.
 
 ## Architecture View
 
@@ -102,10 +114,15 @@ The project architecture panel answers five questions in order:
 
 Visual rules:
 
-- thick blue line: production data flow
-- amber solid line: formal artifact / contract flow
-- violet dashed line: formal decision write-back
-- green dotted boundary: observer / teacher / learner sidecar with no runtime control
+- idle view shows the four system blocks; activity view automatically reveals the relevant governance block and child capability/resource
+- each node uses a status color bar, a stable technical abbreviation, a Chinese logic-oriented purpose, and a Chinese explanation of its effect on the flow
+- implementation names and file paths remain in the catalog/detail context; the main canvas does not use raw English module names as its primary explanation
+- blue solid arrow: production data flow
+- amber solid arrow: formal artifact / contract flow
+- violet dashed arrow: formal decision write-back
+- green dotted line: observer / teacher / learner sidecar with no runtime control
+- only the latest activity source, target, and route pulse; the rest of the architecture remains still
+- the view is presentation-only: users do not need to click nodes, and the canvas never writes formal decisions
 
 Node status is derived from formal artifacts. A completed training event is not displayed as a completed project when the Unity Reference Gate remains blocked.
 

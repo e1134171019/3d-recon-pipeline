@@ -8,8 +8,8 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   </head>
   <body>
-    <div id="app" v-cloak class="app-shell">
-      <aside class="sidebar">
+    <div id="app" v-cloak class="app-shell" :class="{ 'architecture-focus': activeView === 'architecture' }">
+      <aside v-if="activeView !== 'architecture'" class="sidebar">
         <div class="brand">
           <span class="brand-mark">3D</span>
           <div>
@@ -43,7 +43,7 @@
         </div>
       </aside>
 
-      <main class="workspace">
+      <main class="workspace" :class="{ 'workspace-full': activeView === 'architecture' }">
         <header class="topbar">
           <div>
             <p class="kicker">{{ activeViewLabel.eyebrow }}</p>
@@ -53,8 +53,8 @@
             <div class="traffic-pill">
               <span class="traffic-dot" :class="metaStatusClass"></span>
               <div>
-                <small>Last traffic</small>
-                <strong>{{ flowFrom }} → {{ flowTo }}</strong>
+                <small>最近活動</small>
+                <strong>{{ actorDisplayName(flowFrom) }} → {{ actorDisplayName(flowTo) }}</strong>
               </div>
             </div>
             <div class="health-pill" :class="{ stale: isStale }">
@@ -67,7 +67,105 @@
           </div>
         </header>
 
-        <section v-if="activeView === 'project'" class="system-map-view">
+        <section v-if="activeView === 'architecture'" class="architecture-view">
+          <section class="architecture-hero">
+            <div>
+              <p class="kicker">專案治理結構</p>
+              <h2>{{ catalog?.mission?.name_zh || '3D 重建治理平台' }}</h2>
+              <p>{{ catalog?.mission?.summary }}</p>
+            </div>
+            <div class="architecture-stats">
+              <article>
+                <strong>{{ catalogStats.systems }}</strong>
+                <span>頂層系統</span>
+              </article>
+              <article>
+                <strong>{{ catalogStats.major }}</strong>
+                <span>主要治理區塊</span>
+              </article>
+              <article>
+                <strong>{{ catalogStats.children }}</strong>
+                <span>可展開子區塊</span>
+              </article>
+            </div>
+          </section>
+
+          <section class="architecture-layout">
+            <div class="architecture-network-card">
+              <header class="section-head architecture-toolbar">
+                <div>
+                  <p class="kicker">動態治理邏輯圖</p>
+                  <h2>系統欄 × 三層階層 · 4 系統 / 17 治理區塊 / 25 子節點</h2>
+                </div>
+                <span>AI 執行時只放大來源、目標與實際傳遞路徑</span>
+              </header>
+              <div class="architecture-live-layout">
+                <div class="architecture-network-stage">
+                  <canvas ref="architectureCanvas" class="architecture-network-canvas"></canvas>
+                  <div class="architecture-network-caption">
+                    <span>{{ architectureAutoMode ? '自動跟隨對話框 AI' : '專案全景' }}</span>
+                    <strong>{{ architectureAutoMode ? latestMetaActivity.title : '四個系統共同完成可部署地圖' }}</strong>
+                    <small>{{ architectureAutoMode ? architectureLogicDetail(architectureFocusTarget) : '收到新的活動事件後，畫面會自動進入目標系統與治理區塊。' }}</small>
+                  </div>
+                  <div class="architecture-network-legend">
+                    <span><i class="legend-hierarchy-flow"></i>治理階層</span>
+                    <span><i class="legend-sidecar-flow"></i>對話框 AI 活動路徑</span>
+                  </div>
+                </div>
+
+                <aside class="architecture-auto-inspector" :class="`status-${architectureAutoMode ? latestMetaActivity.status : 'idle'}`">
+                  <div>
+                    <p class="kicker">{{ architectureAutoMode ? '即時執行狀態' : '專案全景摘要' }}</p>
+                    <h3>{{ architectureAutoMode ? architectureLogicTitle(architectureFocusTarget) : '等待下一筆對話框 AI 活動' }}</h3>
+                    <p>{{ architectureAutoMode ? architectureLogicDetail(architectureFocusTarget) : '平時只顯示四個系統；活動開始後自動展開目標路徑。' }}</p>
+                  </div>
+                  <dl v-if="architectureAutoMode">
+                    <div>
+                      <dt>目前動作</dt>
+                      <dd>{{ latestMetaActivity.title || '執行中' }}</dd>
+                    </div>
+                    <div>
+                      <dt>所在路徑</dt>
+                      <dd>{{ architectureFocusPath.map(architectureLogicTitle).join(' / ') }}</dd>
+                    </div>
+                    <div>
+                      <dt>技術路徑</dt>
+                      <dd class="technical-path">{{ architectureFocusTechnicalPath }}</dd>
+                    </div>
+                    <div>
+                      <dt>傳遞方式</dt>
+                      <dd>{{ actorDisplayName(flowFrom) }} → {{ actorDisplayName(flowTo) }}</dd>
+                    </div>
+                    <div>
+                      <dt>目前狀態</dt>
+                      <dd>{{ latestMetaActivity.status || 'idle' }}</dd>
+                    </div>
+                    <div>
+                      <dt>正式主線影響</dt>
+                      <dd>無。Observer activity 僅供觀看。</dd>
+                    </div>
+                  </dl>
+                  <dl v-else>
+                    <div>
+                      <dt>正式階段</dt>
+                      <dd>Phase 1 · 地圖建立</dd>
+                    </div>
+                    <div>
+                      <dt>核心阻塞</dt>
+                      <dd>Unity Reference Gate</dd>
+                    </div>
+                    <div>
+                      <dt>觀測模式</dt>
+                      <dd>唯讀 · 自動跟隨</dd>
+                    </div>
+                  </dl>
+                </aside>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section v-else-if="activeView === 'project'" class="system-map-view">
           <section class="signal-map-card signal-map-full">
             <header class="signal-map-head">
               <div>
@@ -456,13 +554,13 @@
             <aside class="traffic-card">
               <p class="kicker">Latest route</p>
               <div class="traffic-route">
-                <strong>{{ flowFrom }}</strong>
+                <strong>{{ actorDisplayName(flowFrom) }}</strong>
                 <i><span></span></i>
-                <strong>{{ flowTo }}</strong>
+                <strong>{{ actorDisplayName(flowTo) }}</strong>
               </div>
-              <span>{{ flowChannel }}</span>
-              <h3>{{ latestMetaActivity.title || 'Waiting for activity' }}</h3>
-              <p>{{ latestMetaActivity.summary || 'Observer-only events appear here.' }}</p>
+              <span>{{ channelDisplayName(flowChannel) }}</span>
+              <h3>{{ latestMetaActivity.title || '等待新的活動' }}</h3>
+              <p>{{ latestMetaActivity.summary || '唯讀觀測事件會顯示在這裡。' }}</p>
             </aside>
           </div>
         </section>

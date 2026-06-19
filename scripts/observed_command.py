@@ -49,6 +49,7 @@ def main() -> int:
     parser.add_argument("--from-actor", default="")
     parser.add_argument("--to-actor", default="")
     parser.add_argument("--channel", default="")
+    parser.add_argument("--target-node", default="")
     parser.add_argument("--cwd", type=Path, default=ROOT)
     parser.add_argument("--event-json-file", type=Path, default=None)
     parser.add_argument("--related-artifact", action="append", default=[])
@@ -65,6 +66,7 @@ def main() -> int:
         ("from_actor", args.from_actor),
         ("to_actor", args.to_actor),
         ("channel", args.channel),
+        ("target_node", args.target_node),
         ("title", args.title),
         ("summary", args.summary),
     ):
